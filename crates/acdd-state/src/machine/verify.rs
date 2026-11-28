@@ -528,6 +528,7 @@ mod tests {
                 spec_path: None,
                 spec_id: None,
                 spec_digest: "d".to_owned(),
+                attached_specs: Vec::new(),
                 is_ephemeral: false,
                 isolation: IsolationMode::InPlace,
                 target_base: None,

@@ -16,6 +16,7 @@ pub use schema::{
 };
 pub use shell_template::{render_command_with_scope_target, render_command_with_test_filter};
 pub use validate::{
-    check_guidance_budget, resolve_and_budget_guidance, resolve_command_for_scope,
-    validate_workflow, ResolvedCommandInvocation, WorkflowValidationOptions,
+    check_guidance_budget, collect_workflow_glob_warnings, resolve_and_budget_guidance,
+    resolve_command_for_scope, validate_workflow, ResolvedCommandInvocation,
+    WorkflowValidationOptions,
 };

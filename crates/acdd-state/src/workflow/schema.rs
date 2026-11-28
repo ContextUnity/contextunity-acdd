@@ -1222,6 +1222,9 @@ pub struct WorkflowDef {
     /// Key-wise guidance slot catalog (`null` deletes a slot).
     #[serde(default)]
     pub guidance: BTreeMap<String, Option<GuidanceEntry>>,
+    /// Key-wise named documentation path globs (`null` deletes an inherited path entry).
+    #[serde(default)]
+    pub paths: BTreeMap<String, Option<Vec<String>>>,
     /// Key-wise review contour catalog (`null` deletes a contour).
     #[serde(default)]
     pub contours: BTreeMap<String, Option<ContourDef>>,
@@ -1271,6 +1274,9 @@ pub struct ResolvedWorkflow {
     pub proofs: BTreeMap<String, ProofCatalogDef>,
     /// Resolved guidance slot catalog.
     pub guidance: BTreeMap<String, GuidanceEntry>,
+    /// Resolved named documentation path globs (`paths.<name>`).
+    #[serde(default)]
+    pub paths: BTreeMap<String, Vec<String>>,
     /// Resolved review contour catalog.
     pub contours: BTreeMap<String, ContourDef>,
     /// Resolved gate templates (already expanded into `gates`).
@@ -1298,6 +1304,7 @@ impl Default for ResolvedWorkflow {
             scope_args_by_pattern: BTreeMap::new(),
             proofs: BTreeMap::new(),
             guidance: BTreeMap::new(),
+            paths: BTreeMap::new(),
             contours: BTreeMap::new(),
             gate_templates: BTreeMap::new(),
             modules: SubsystemRegistry::default(),
@@ -1389,10 +1396,18 @@ impl ResolvedWorkflow {
 /// Parse a YAML string strictly into a `WorkflowDef`.
 pub fn parse_workflow(yaml: &str) -> Result<WorkflowDef, AcddError> {
     let parsed: WorkflowDef = serde_yaml::from_str(yaml).map_err(|err| {
-        AcddError::new(
+        let msg = err.to_string();
+        let acdd_err = AcddError::new(
             ErrorCode::WorkflowSchemaInvalid,
-            format!("invalid v2 workflow YAML: {err}"),
-        )
+            format!("invalid v2 workflow YAML: {msg}"),
+        );
+        if msg.contains("`specs`") || msg.contains("`roadmap`") {
+            acdd_err.with_hint(
+                "Configure 'specs' and 'roadmap' in acdd.yaml; workflow YAML files must not declare 'specs' or 'roadmap' keys",
+            )
+        } else {
+            acdd_err
+        }
     })?;
     if parsed.version != 2 {
         return Err(AcddError::new(

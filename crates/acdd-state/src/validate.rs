@@ -5,8 +5,9 @@
 
 use crate::machine::{effective_task_tags, matches_when};
 use crate::workflow::{
-    resolve_optional_workflow_ref_with_dirs, resolve_workflow_from_str_with_dirs,
-    resolve_workflow_ref_with_dirs, validate_workflow, ResolvedWorkflow, WorkflowValidationOptions,
+    collect_workflow_glob_warnings, resolve_optional_workflow_ref_with_dirs,
+    resolve_workflow_from_str_with_dirs, resolve_workflow_ref_with_dirs, validate_workflow,
+    ResolvedWorkflow, WorkflowValidationOptions,
 };
 use crate::store::traits::StateReader;
 use crate::usecases::config::StateEngineConfig;
@@ -16,7 +17,10 @@ use crate::usecases::lifecycle::{
     effective_modules_for_profile, effective_spec_collections, validate_profile_fail_closed,
 };
 use crate::usecases::overlay::{validate_spec_dependencies, StateRuntimeOverlay};
-use acdd_core::config::{Adapter, SpecConfig, ACDD_CONFIG_FILE, ACDD_DIR};
+use acdd_core::config::{
+    validate_external_spec_yaml, validate_lint_file_yaml, Adapter, SpecConfig, ACDD_CONFIG_FILE,
+    ACDD_DIR,
+};
 use acdd_core::errors::{AcddError, ErrorCode};
 use acdd_core::fs::checked_child;
 use acdd_core::path_policy::{is_valid_scope_glob, scopes_overlap};
@@ -28,7 +32,7 @@ use acdd_spec::validate::{
     build_resp, fail, fail_state_err, load_strict_adapter, pass, scan_collection_specs,
     validate_spec_static_checks, ScannedSpec,
 };
-use acdd_spec::{parse_spec, SpecDocument, SpecStatus};
+use acdd_spec::{parse_spec_with_collections, SpecDocument, SpecStatus};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -83,8 +87,10 @@ pub fn validate_workspace(
             &config_path_label,
             "CONFIG_VALID",
             format!(
-                "validated {ACDD_CONFIG_FILE} ({} spec collections, {} linked workspaces)",
+                "validated {ACDD_CONFIG_FILE} ({} spec collections, {} lint zones, {} lint rules, {} linked workspaces)",
                 adapter.specs.len(),
+                adapter.architecture.zones.len(),
+                adapter.architecture.rules.len(),
                 adapter.linked_workspaces.len()
             ),
         ));
@@ -101,6 +107,7 @@ pub fn validate_workspace(
         "embedded:code".to_owned()
     };
 
+    let effective_specs = acdd_spec::effective_spec_collections(&adapter.specs);
     let active_profile = if require_bound || has_workspace_workflow || explicit_profile.is_some() {
         match resolve_optional_workflow_ref_with_dirs(
             explicit_profile,
@@ -112,10 +119,18 @@ pub fn validate_workspace(
                 let opts = WorkflowValidationOptions {
                     domain_providers: Some(providers),
                     acdd_modules: Some(&adapter.modules),
+                    spec_collections: Some(&effective_specs),
                     require_bound_commands: require_bound,
                 };
                 match validate_workflow(&resolved, &opts) {
                     Ok(()) => {
+                        collect_workflow_glob_warnings(
+                            root,
+                            &profile_diag_path,
+                            &resolved,
+                            &effective_specs,
+                            &mut warnings,
+                        );
                         diagnostics.push(pass(
                             &profile_diag_path,
                             "WORKFLOW_VALID",
@@ -262,6 +277,32 @@ pub fn validate_document(
     };
 
     let workflow_rel = format!("{ACDD_DIR}/workflows/default.yaml");
+    let is_yaml = matches!(
+        abs_path.extension().and_then(|s| s.to_str()),
+        Some("yaml" | "yml")
+    );
+    if is_yaml && is_rel_under_dirs(&rel_display, &adapter.lint_dirs) {
+        match validate_lint_file_yaml(&rel_display, &content) {
+            Ok(()) => diagnostics.push(pass(
+                &rel_display,
+                "LINT_VALID",
+                format!("validated lint rules in {rel_display}"),
+            )),
+            Err(err) => diagnostics.push(fail_state_err(&rel_display, &err, 1, 1)),
+        }
+        return Ok(build_resp(&scope_label, diagnostics, warnings, 1));
+    }
+    if is_yaml && is_rel_under_dirs(&rel_display, &adapter.specs_dirs) {
+        match validate_external_spec_yaml(&rel_display, &content) {
+            Ok(()) => diagnostics.push(pass(
+                &rel_display,
+                "SPEC_SCHEMA_VALID",
+                format!("validated spec schema in {rel_display}"),
+            )),
+            Err(err) => diagnostics.push(fail_state_err(&rel_display, &err, 1, 1)),
+        }
+        return Ok(build_resp(&scope_label, diagnostics, warnings, 1));
+    }
     match path_kind(&abs_path) {
         Some(DocumentKind::Profile) => {
             let require_bound = adapter.modules.is_enabled(SubsystemId::State.as_str())
@@ -274,10 +315,13 @@ pub fn validate_document(
                 providers,
                 require_bound,
                 &mut diagnostics,
+                &mut warnings,
             );
         }
         Some(DocumentKind::Spec) => {
-            let doc = match parse_spec(&content) {
+            let owning_col = match_spec_collection(&adapter.specs, &rel_display)
+                .and_then(|name| adapter.specs.get_key_value(&name).map(|(k, v)| (k.as_str(), v)));
+            let doc = match parse_spec_with_collections(&content, owning_col, &adapter.specs) {
                 Ok(doc) => doc,
                 Err(err) => {
                     diagnostics.push(fail_state_err(&rel_display, &err, 1, 1));
@@ -420,7 +464,7 @@ pub fn validate_spec_for_run(
         &active_docs,
     );
     if let Some(first) = dep_issues.into_iter().next() {
-        return Err(AcddError::new(first.code, first.message));
+        return Err(AcddError::new(first.code, first.message).with_diag_code(first.diag_code));
     }
 
     crate::usecases::deps::verify_run_level_depends_on(config, reader, doc)?;
@@ -435,6 +479,18 @@ enum DocumentKind {
     Profile,
 }
 
+fn is_rel_under_dirs(rel: &str, dirs: &[String]) -> bool {
+    dirs.iter().any(|dir| {
+        let norm = dir
+            .trim()
+            .replace('\\', "/")
+            .trim_start_matches("./")
+            .trim_end_matches('/')
+            .to_owned();
+        !norm.is_empty() && (rel == norm || rel.starts_with(&format!("{norm}/")))
+    })
+}
+
 fn path_kind(path: &Path) -> Option<DocumentKind> {
     let name = path.file_name()?.to_str()?;
     if name.ends_with(".yaml.example") || name.ends_with(".yml.example") {
@@ -447,6 +503,7 @@ fn path_kind(path: &Path) -> Option<DocumentKind> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_profile_doc(
     root: &Path,
     path: &str,
@@ -455,6 +512,7 @@ fn validate_profile_doc(
     providers: &CompositeDomainProvider,
     require_bound_commands: bool,
     diagnostics: &mut Vec<ValidateDiagnostic>,
+    warnings: &mut Vec<Value>,
 ) {
     let profile_id = Path::new(path)
         .file_stem()
@@ -474,21 +532,26 @@ fn validate_profile_doc(
             return;
         }
     };
+    let effective_specs = acdd_spec::effective_spec_collections(&adapter.specs);
     let opts = WorkflowValidationOptions {
         domain_providers: Some(providers),
         acdd_modules: Some(&adapter.modules),
+        spec_collections: Some(&effective_specs),
         require_bound_commands,
     };
     match validate_workflow(&resolved, &opts) {
-        Ok(()) => diagnostics.push(pass(
-            path,
-            "WORKFLOW_VALID",
-            format!(
-                "validated {} gates and {} registered commands",
-                resolved.gates.len(),
-                resolved.commands.len()
-            ),
-        )),
+        Ok(()) => {
+            collect_workflow_glob_warnings(root, path, &resolved, &effective_specs, warnings);
+            diagnostics.push(pass(
+                path,
+                "WORKFLOW_VALID",
+                format!(
+                    "validated {} gates and {} registered commands",
+                    resolved.gates.len(),
+                    resolved.commands.len()
+                ),
+            ));
+        }
         Err(err) => diagnostics.push(fail_state_err(path, &err, 1, 1)),
     }
 }
@@ -523,9 +586,11 @@ fn validate_parsed_spec(
         ) {
             Ok(p) => {
                 let effective_mods = effective_modules_for_profile(&adapter.modules, &p.modules);
+                let effective_specs = acdd_spec::effective_spec_collections(&adapter.specs);
                 let opts = WorkflowValidationOptions {
                     domain_providers: Some(providers),
                     acdd_modules: Some(&effective_mods),
+                    spec_collections: Some(&effective_specs),
                     require_bound_commands: effective_mods.is_enabled(SubsystemId::State.as_str()),
                 };
                 if let Err(err) = validate_workflow(&p, &opts) {

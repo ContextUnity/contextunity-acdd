@@ -303,6 +303,7 @@ fn validate_workspace_config_profile_and_spec_matrix() {
             spec_path: Some("docs/milestones/AC-092.md".to_owned()),
             spec_id: Some("AC-092".to_owned()),
             spec_digest: "aa".repeat(32),
+            attached_specs: Vec::new(),
             is_ephemeral: false,
             isolation: IsolationMode::InPlace,
             target_base: None,
@@ -531,7 +532,7 @@ fn validate_workspace_config_profile_and_spec_matrix() {
     // (b) plan_extend_scope rejects malformed brace globs.
     let mut g_ext = g_done.clone();
     g_ext.nodes[0].status = NodeStatus::Ready;
-    let machine_prof = to_machine_profile(&resolved_p).unwrap();
+    let machine_prof = to_machine_profile(&resolved_p, None).unwrap();
     let ext_err = evaluate_transition(
         &g_ext,
         &machine_prof,

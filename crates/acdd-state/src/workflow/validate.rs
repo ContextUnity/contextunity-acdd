@@ -7,12 +7,17 @@ use super::schema::{
 use super::shell_template::{glob_specificity, validate_shell_template_placeholders};
 use super::when::WhenExpr;
 use crate::types::SaveAction;
+use acdd_core::config::SpecConfig;
 use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::ids::{GateId, GateSelector};
+use acdd_core::path_policy::{
+    is_valid_scope_glob, normalize_rel_path, should_skip_walk_dir, WorkspacePathPolicy,
+};
 use acdd_core::ports::{is_builtin_mcp_tool, CompositeDomainProvider};
 use acdd_core::subsystems::SubsystemRegistry;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 /// Legacy 0.5 tool names explicitly rejected during v2 profile validation.
 const LEGACY_TOOL_NAMES: &[&str] = &[
@@ -36,6 +41,8 @@ pub struct WorkflowValidationOptions<'a> {
     pub domain_providers: Option<&'a CompositeDomainProvider>,
     /// Workspace `acdd.yaml` `modules:` override combined with `profile.modules`.
     pub acdd_modules: Option<&'a SubsystemRegistry>,
+    /// Effective `acdd.yaml` `specs:` collection registry (`None` defaults to built-in `milestones`/`plans`).
+    pub spec_collections: Option<&'a BTreeMap<String, SpecConfig>>,
     /// When `true`, any gate referencing an `unbound: true` command fails with `CommandUnbound`.
     pub require_bound_commands: bool,
 }
@@ -101,6 +108,7 @@ pub fn validate_workflow(
     }
     validate_limits(&profile.limits)?;
     validate_protected_paths(profile)?;
+    validate_paths_map(profile)?;
     validate_proof_catalog(profile)?;
     validate_roles(profile)?;
     validate_commands(profile)?;
@@ -168,11 +176,31 @@ fn validate_limits(limits: &ResourceLimits) -> Result<(), AcddError> {
 
 fn validate_protected_paths(profile: &ResolvedWorkflow) -> Result<(), AcddError> {
     for pat in &profile.protected_paths {
-        if !acdd_core::path_policy::is_valid_scope_glob(pat) {
+        if !is_valid_scope_glob(pat) {
             return Err(AcddError::new(
                 ErrorCode::WorkflowSchemaInvalid,
                 format!("protected_paths contains invalid or non-normalized scope glob '{pat}'"),
             ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_paths_map(profile: &ResolvedWorkflow) -> Result<(), AcddError> {
+    for (name, globs) in &profile.paths {
+        if name.trim().is_empty() {
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
+                "workflow paths: entry name cannot be empty",
+            ));
+        }
+        for pat in globs {
+            if !is_valid_scope_glob(pat) {
+                return Err(AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
+                    format!("paths.{name} contains invalid or non-normalized scope glob '{pat}'"),
+                ));
+            }
         }
     }
     Ok(())
@@ -643,10 +671,10 @@ fn validate_single_gate(
     }
 
     for lens in &gate.context {
-        let domain = lens.split('.').next().unwrap_or("");
-        ensure_domain_enabled(domain, &profile.modules, opts.acdd_modules, &ctx)?;
-        providers.validate_context_lens(lens)?;
+        validate_gate_context_lens(lens, profile, opts, &ctx)?;
     }
+
+    validate_gate_scope(gate, profile, opts, &ctx)?;
 
     for g_ref in &gate.guidance {
         match g_ref {
@@ -687,6 +715,256 @@ fn validate_single_gate(
 
     validate_gate_proof(profile, gate, &ctx)?;
     Ok(())
+}
+
+fn reject_legacy_lens_or_scope(raw: &str, ctx: &str, field: &str) -> Result<(), AcddError> {
+    match raw {
+        "docs.instructions" => Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
+            format!("{ctx}: legacy '{raw}' in {field} is no longer supported"),
+        )
+        .with_hint("Replace 'docs.instructions' with 'paths.instructions' and declare 'paths.instructions' (or inherit 'base')")),
+        "docs.adrs" => Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
+            format!("{ctx}: legacy '{raw}' in {field} is no longer supported"),
+        )
+        .with_hint("Replace 'docs.adrs' with 'paths.adrs' and declare 'paths.adrs' (or inherit 'base')")),
+        _ => Ok(()),
+    }
+}
+
+fn validate_named_spec_ref<'a>(
+    raw: &str,
+    effective_specs: &'a BTreeMap<String, SpecConfig>,
+    ctx: &str,
+    field: &str,
+) -> Result<&'a SpecConfig, AcddError> {
+    let name = raw.strip_prefix("specs.").unwrap_or("");
+    if name.is_empty() {
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
+            format!("{ctx}: {field} entry '{raw}' must name a registered spec (e.g. 'specs.memories')"),
+        ));
+    }
+    effective_specs.get(name).ok_or_else(|| {
+        let available: Vec<&str> = effective_specs.keys().map(String::as_str).collect();
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
+            format!("{ctx}: unknown spec reference '{raw}' in {field}"),
+        )
+        .with_hint(format!(
+            "Register 'specs.{name}' in acdd.yaml (registered specs: {available:?})"
+        ))
+    })
+}
+
+fn validate_named_path_ref<'a>(
+    raw: &str,
+    profile: &'a ResolvedWorkflow,
+    ctx: &str,
+    field: &str,
+) -> Result<&'a [String], AcddError> {
+    let name = raw.strip_prefix("paths.").unwrap_or("");
+    if name.is_empty() {
+        return Err(AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
+            format!("{ctx}: {field} entry '{raw}' must name a declared path group (e.g. 'paths.docs')"),
+        ));
+    }
+    profile.paths.get(name).map(Vec::as_slice).ok_or_else(|| {
+        let available: Vec<&str> = profile.paths.keys().map(String::as_str).collect();
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
+            format!("{ctx}: unknown path reference '{raw}' in {field}"),
+        )
+        .with_hint(format!(
+            "Declare 'paths.{name}: [...]' in the workflow (declared paths: {available:?})"
+        ))
+    })
+}
+
+fn validate_gate_context_lens(
+    lens: &str,
+    profile: &ResolvedWorkflow,
+    opts: &WorkflowValidationOptions<'_>,
+    ctx: &str,
+) -> Result<(), AcddError> {
+    reject_legacy_lens_or_scope(lens, ctx, "context:")?;
+    let empty_providers = CompositeDomainProvider::default();
+    let providers = opts.domain_providers.unwrap_or(&empty_providers);
+    let empty_specs = BTreeMap::new();
+    let effective_specs =
+        acdd_spec::effective_spec_collections(opts.spec_collections.unwrap_or(&empty_specs));
+
+    if lens.starts_with("paths.") {
+        let _ = validate_named_path_ref(lens, profile, ctx, "context:")?;
+        ensure_domain_enabled("docs", &profile.modules, opts.acdd_modules, ctx)?;
+        return providers.validate_context_lens(lens);
+    }
+    if lens.starts_with("specs.") {
+        let _ = validate_named_spec_ref(lens, &effective_specs, ctx, "context:")?;
+        ensure_domain_enabled("docs", &profile.modules, opts.acdd_modules, ctx)?;
+        return providers.validate_context_lens(lens);
+    }
+
+    let domain = lens.split('.').next().unwrap_or("");
+    ensure_domain_enabled(domain, &profile.modules, opts.acdd_modules, ctx)?;
+    providers.validate_context_lens(lens)
+}
+
+fn validate_gate_scope(
+    gate: &GateDef,
+    profile: &ResolvedWorkflow,
+    opts: &WorkflowValidationOptions<'_>,
+    ctx: &str,
+) -> Result<(), AcddError> {
+    if gate.scope.is_empty() {
+        return Ok(());
+    }
+    let empty_specs = BTreeMap::new();
+    let effective_specs =
+        acdd_spec::effective_spec_collections(opts.spec_collections.unwrap_or(&empty_specs));
+    for pat in &gate.scope {
+        reject_legacy_lens_or_scope(pat, ctx, "scope:")?;
+        if pat.starts_with("specs.") {
+            let col = validate_named_spec_ref(pat, &effective_specs, ctx, "scope:")?;
+            let patterns = col.patterns();
+            if patterns.is_empty() || patterns.iter().any(|p| !is_valid_scope_glob(p)) {
+                return Err(AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
+                    format!("{ctx}: spec reference '{pat}' in scope: resolves to empty or invalid globs {patterns:?}"),
+                ));
+            }
+        } else if pat.starts_with("paths.") {
+            let globs = validate_named_path_ref(pat, profile, ctx, "scope:")?;
+            if globs.is_empty() || globs.iter().any(|g| !is_valid_scope_glob(g)) {
+                return Err(AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
+                    format!("{ctx}: path reference '{pat}' in scope: resolves to empty or invalid globs {globs:?}"),
+                ));
+            }
+        } else if !is_valid_scope_glob(pat) {
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
+                format!("{ctx}: scope contains invalid or non-normalized scope glob '{pat}'"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn collect_referenced_spec_lenses(
+    gates: &[GateDef],
+    spec_collections: &BTreeMap<String, SpecConfig>,
+    out: &mut BTreeMap<String, Vec<String>>,
+) {
+    for gate in gates {
+        for entry in gate.scope.iter().chain(&gate.context) {
+            if let Some(name) = entry.strip_prefix("specs.") {
+                if let Some(col) = spec_collections.get(name) {
+                    out.entry(entry.clone())
+                        .or_insert_with(|| col.patterns().into_iter().map(str::to_owned).collect());
+                }
+            }
+        }
+        if !gate.gates.is_empty() {
+            collect_referenced_spec_lenses(&gate.gates, spec_collections, out);
+        }
+        if let Some(ref tb) = gate.tasks {
+            collect_referenced_spec_lenses(&tb.gates, spec_collections, out);
+        }
+    }
+}
+
+/// Emit structured validation warnings for any declared `paths.<name>` or referenced `specs.<name>`
+/// whose globs are empty or match zero non-symlink regular files under `root`.
+pub fn collect_workflow_glob_warnings(
+    root: &Path,
+    profile_path: &str,
+    profile: &ResolvedWorkflow,
+    spec_collections: &BTreeMap<String, SpecConfig>,
+    warnings: &mut Vec<Value>,
+) {
+    let mut checked: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (name, globs) in &profile.paths {
+        checked.insert(format!("paths.{name}"), globs.clone());
+    }
+    collect_referenced_spec_lenses(&profile.gates, spec_collections, &mut checked);
+    if checked.is_empty() {
+        return;
+    }
+
+    let mut pending: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (lens, globs) in checked {
+        if globs.is_empty() {
+            warnings.push(json!({
+                "code": "EMPTY_GLOB_MATCH",
+                "path": profile_path,
+                "lens": lens,
+                "globs": globs,
+                "message": format!("workflow lens '{lens}' has an empty glob list and matches 0 files"),
+            }));
+        } else {
+            pending.insert(lens, globs);
+        }
+    }
+    if pending.is_empty() {
+        return;
+    }
+
+    let policy = WorkspacePathPolicy::default();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        if pending.is_empty() {
+            break;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut children: Vec<_> = entries.flatten().collect();
+        children.sort_by_key(|e| e.file_name());
+        for entry in children {
+            let Ok(ft) = entry.file_type() else {
+                continue;
+            };
+            if ft.is_symlink() {
+                continue;
+            }
+            let path = entry.path();
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if ft.is_dir() {
+                if should_skip_walk_dir(
+                    dir.file_name().and_then(|p| p.to_str()),
+                    name_str.as_ref(),
+                ) {
+                    continue;
+                }
+                stack.push(path);
+            } else if ft.is_file() {
+                let Ok(rel_raw) = path.strip_prefix(root) else {
+                    continue;
+                };
+                let Some(rel) = normalize_rel_path(&rel_raw.to_string_lossy()) else {
+                    continue;
+                };
+                pending.retain(|_, globs| !policy.is_scope_admitted(&rel, globs));
+                if pending.is_empty() {
+                    break;
+                }
+            }
+        }
+    }
+
+    for (lens, globs) in pending {
+        warnings.push(json!({
+            "code": "EMPTY_GLOB_MATCH",
+            "path": profile_path,
+            "lens": lens,
+            "globs": globs,
+            "message": format!("workflow lens '{lens}' globs {globs:?} matched 0 files"),
+        }));
+    }
 }
 
 fn validate_report_path_template(
@@ -935,7 +1213,7 @@ fn ensure_domain_enabled(
     acdd_modules: Option<&SubsystemRegistry>,
     ctx: &str,
 ) -> Result<(), AcddError> {
-    if matches!(domain, "code" | "docs") {
+    if matches!(domain, "code" | "docs" | "spec") {
         if !is_subsystem_effectively_enabled(domain, profile_modules, acdd_modules) {
             return Err(AcddError::new(
                 ErrorCode::DomainCapabilityUnavailable,

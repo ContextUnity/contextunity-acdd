@@ -38,6 +38,20 @@ pub fn effective_task_tags(
     Ok(out)
 }
 
+fn merge_task_and_gate_scope(task_scope: &[String], gate_scope: &[String]) -> Vec<String> {
+    if gate_scope.is_empty() {
+        return task_scope.to_vec();
+    }
+    let mut out = Vec::with_capacity(task_scope.len() + gate_scope.len());
+    let mut seen = BTreeSet::new();
+    for pat in task_scope.iter().chain(gate_scope) {
+        if seen.insert(pat.as_str()) {
+            out.push(pat.clone());
+        }
+    }
+    out
+}
+
 /// Evaluate an optional `when:` expression against `task_tags` (`None` evaluates to `true`).
 pub fn matches_when(
     when: Option<&str>,
@@ -189,6 +203,7 @@ pub fn build_initial_run_graph(
         spec_path: input.spec_path.clone(),
         spec_id: None,
         spec_digest: input.spec.spec_digest.clone(),
+        attached_specs: Vec::new(),
         is_ephemeral: input.is_ephemeral,
         isolation: profile.git.isolation,
         target_base: input.target_base.clone(),
@@ -420,7 +435,7 @@ impl RunGraphBuilder<'_> {
                     applicable: task.invariants.clone(),
                     verified: Vec::new(),
                 },
-                scope: task.scope.clone(),
+                scope: merge_task_and_gate_scope(&task.scope, &gate.scope),
                 extended_scope: task.extended_scope.clone(),
                 active_span_id: None,
             });
@@ -644,34 +659,31 @@ fn descend_gate_def<'a>(
 
 /// Return the effective admitted scope (`scope ∪ extended_scope`) for a node.
 ///
-/// For `TaskGate`, inherits the owning `Task` container's `scope ∪ extended_scope` if present.
+/// For `TaskGate`, unions the owning `Task` container's `scope ∪ extended_scope` with
+/// any gate-level `scope ∪ extended_scope` (e.g. expanded `specs.<name>` / `paths.<name>`).
+/// For `Task`, unions the task's `scope ∪ extended_scope` with every child `TaskGate`.
 /// For `RootGate`, returns the gate's declared `scope` (empty means full candidate tree).
 pub fn container_scope(snapshot: &RunGraphSnapshot, node: &GateNodeRecord) -> Vec<String> {
     let mut combined = Vec::new();
     let mut seen: BTreeSet<&str> = BTreeSet::new();
-    let source = match node.kind {
-        NodeKind::TaskGate => {
-            if let Some(ref parent_id) = node.parent_id {
-                snapshot
-                    .nodes
-                    .iter()
-                    .find(|n| &n.node_id == parent_id)
-                    .unwrap_or(node)
-            } else {
-                node
+    let parent = (node.kind == NodeKind::TaskGate)
+        .then(|| node.parent_id.as_ref().and_then(|pid| snapshot.nodes.iter().find(|n| &n.node_id == pid)))
+        .flatten();
+    let child_gates = snapshot.nodes.iter().filter(|n| {
+        node.kind == NodeKind::Task
+            && n.kind == NodeKind::TaskGate
+            && n.parent_id.as_deref() == Some(node.node_id.as_str())
+    });
+    for source in parent.into_iter().chain(std::iter::once(node)).chain(child_gates) {
+        for s in &source.scope {
+            if seen.insert(s.as_str()) {
+                combined.push(s.clone());
             }
         }
-        _ => node,
-    };
-
-    for s in &source.scope {
-        if seen.insert(s.as_str()) {
-            combined.push(s.clone());
-        }
-    }
-    for ext in &source.extended_scope {
-        if seen.insert(ext.path.as_str()) {
-            combined.push(ext.path.clone());
+        for ext in &source.extended_scope {
+            if seen.insert(ext.path.as_str()) {
+                combined.push(ext.path.clone());
+            }
         }
     }
     combined

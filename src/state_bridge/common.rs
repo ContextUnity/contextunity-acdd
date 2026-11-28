@@ -1,10 +1,12 @@
 //! Shared leaf constants, path/adapter resolution, SQLite read helpers, and state execution helpers for `state_bridge`.
 
-use acdd_core::config::{Adapter, ACDD_CONFIG_FILE};
+use acdd_core::config::{Adapter, SpecConfig, ACDD_CONFIG_FILE};
 use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::format::sha256_hex;
+use acdd_core::fs::checked_child;
 use acdd_core::git::primary_worktree_root;
-use acdd_core::ports::{CompositeDomainProvider, DomainActionResult, DomainProvider};
+use acdd_core::path_policy::normalize_rel_path;
+use acdd_core::ports::{CompositeDomainProvider, DomainActionResult, DomainCheckReq, DomainProvider};
 use acdd_core::subsystems::SubsystemId;
 use acdd_index::db::reader::open_raw_confined_readonly;
 use acdd_state::context::budget::pack_json_lens;
@@ -15,8 +17,10 @@ use acdd_state::usecases::{
 use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use walkdir::WalkDir;
 
 /// Explicit CLI/MCP invocation settings replacing legacy `acdd_tasks::tasks::configuration::InvocationSettings`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,7 +37,7 @@ pub struct InvocationSettings {
     pub code_db: PathBuf,
 }
 
-/// Mandatory instruction banner emitted in `docs.instructions` to direct workers to scoped `AGENTS.md` files.
+/// Mandatory instruction banner emitted in `paths.instructions` to direct workers to scoped `AGENTS.md` files.
 pub(super) const DOCS_INSTRUCTIONS_DIRECTIVE: &str =
     "MANDATORY: read repository rules for respective scope.";
 /// Maximum fallback invariants returned when `code-map.sqlite` has no scope-matched `governs` edges or `admitted_scope` is empty.
@@ -62,7 +66,7 @@ pub(super) const CODE_SEAM_DIAGNOSTIC_EDGE_LIMIT: usize = 10;
 /// Default non-tight byte budget used across domain-provider context unit tests.
 #[cfg(test)]
 pub(super) const TEST_DEFAULT_CONTEXT_MAX_BYTES: usize = 8_192;
-/// Tight byte budget asserting deterministic `truncated: true` capping on `docs.instructions`.
+/// Tight byte budget asserting deterministic `truncated: true` capping on `paths.instructions`.
 #[cfg(test)]
 pub(super) const TEST_TIGHT_INSTRUCTIONS_MAX_BYTES: usize = 145;
 /// Full 32 KiB context budget used in `code_domain` external-caller unit tests.
@@ -93,7 +97,10 @@ pub(super) fn build_composite_providers(
     let mut flags = BTreeMap::new();
     for provider in &providers {
         let id = provider.domain_id();
-        let enabled = if id == SubsystemId::Code.as_str() || id == SubsystemId::Docs.as_str() {
+        let enabled = if id == SubsystemId::Code.as_str()
+            || id == SubsystemId::Docs.as_str()
+            || id == SubsystemId::Spec.as_str()
+        {
             config.modules.is_enabled(id)
         } else {
             config.modules.is_domain_enabled(id)
@@ -102,6 +109,35 @@ pub(super) fn build_composite_providers(
     }
     let composite = CompositeDomainProvider::with_module_flags(providers, flags)?;
     Ok(Arc::new(composite))
+}
+
+/// Resolve the effective `state.sqlite` path for `root`, falling back to the loaded worktree
+/// `config.state_db` only when a secondary worktree's primary checkout fails with
+/// `WorkflowSchemaInvalid` due to cross-branch `acdd.yaml` schema drift.
+pub(crate) fn resolve_effective_state_db_with_fallback(
+    root: &Path,
+    state_db: Option<&Path>,
+    config: &Adapter,
+) -> Result<PathBuf, AcddError> {
+    let primary = primary_worktree_root(root).unwrap_or_else(|| root.to_path_buf());
+    if let Some(path) = acdd_core::config::resolve_custom_db_path(&primary, state_db) {
+        return Ok(path);
+    }
+    match acdd_state::usecases::deps::try_resolve_effective_state_db(root, None) {
+        Ok(path) => Ok(path),
+        Err(err) if err.code == ErrorCode::WorkflowSchemaInvalid => {
+            let root_canon = acdd_core::fs::canonicalize_macos_var(root);
+            let primary_canon = acdd_core::fs::canonicalize_macos_var(&primary);
+            if primary_canon != root_canon {
+                Ok(acdd_core::config::resolve_effective_state_db_path(
+                    &primary, None, config,
+                ))
+            } else {
+                Err(err)
+            }
+        }
+        Err(err) => Err(err),
+    }
 }
 
 /// Construct a [`StateEngineConfig`] from workspace root, active worktree, optional `--state-db` / `--db` overrides, and [`Adapter`].
@@ -114,7 +150,7 @@ pub(crate) fn state_engine_config(
 ) -> Result<StateEngineConfig, AcddError> {
     let primary = primary_worktree_root(root).unwrap_or_else(|| root.to_path_buf());
     let default_state_db = primary.join(".acdd/state.sqlite");
-    let configured = acdd_state::usecases::deps::try_resolve_effective_state_db(root, state_db)?;
+    let configured = resolve_effective_state_db_with_fallback(root, state_db, config)?;
     let state_db_override = (configured != default_state_db).then_some(configured);
     let linked_workspaces = config
         .linked_workspaces
@@ -326,20 +362,140 @@ pub(super) fn combine_file_hashes(file_hashes: &BTreeMap<String, String>) -> Str
     sha256_hex(buf.as_bytes())
 }
 
+pub(super) fn collect_spec_selectors<'a>(
+    spec: &'a Option<String>,
+    specs: &'a Option<Vec<String>>,
+) -> Vec<&'a str> {
+    let mut selectors = Vec::new();
+    if let Some(ref single) = spec {
+        selectors.push(single.trim());
+    }
+    if let Some(ref many) = specs {
+        for s in many {
+            selectors.push(s.trim());
+        }
+    }
+    selectors
+}
+
+pub(super) fn collect_profile_dir_files(
+    worktree: &Path,
+    dirs: &[String],
+    max_depth: usize,
+) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for dir in dirs {
+        let Ok(abs_dir) = checked_child(worktree, Path::new(dir)) else {
+            continue;
+        };
+        if !abs_dir.is_dir() {
+            continue;
+        }
+        for entry in WalkDir::new(&abs_dir)
+            .max_depth(max_depth)
+            .into_iter()
+            .filter_entry(|e| !e.file_type().is_symlink())
+            .filter_map(Result::ok)
+        {
+            if entry.file_type().is_file() {
+                out.push(entry.into_path());
+            }
+        }
+    }
+    out
+}
+
+pub(super) fn is_active_collection_spec_rel(rel: &str, col_cfg: &SpecConfig) -> bool {
+    let Some(norm) = normalize_rel_path(rel) else {
+        return false;
+    };
+    if !norm.ends_with(".md")
+        || norm.contains("/archive/")
+        || matches!(
+            Path::new(&norm).file_name().and_then(|s| s.to_str()),
+            Some("README.md" | "AGENTS.md" | "CLAUDE.md")
+        )
+    {
+        return false;
+    }
+    col_cfg.matches_rel_path(&norm)
+}
+
+pub(super) fn compute_specs_digest(
+    worktree: &Path,
+    adapter: &Adapter,
+    params: &Value,
+    req: &DomainCheckReq,
+    meta_key: &str,
+) -> String {
+    let mut digests: BTreeMap<String, String> = BTreeMap::new();
+    let mut record_file = |rel: &str| {
+        if let Ok(abs) = checked_child(worktree, Path::new(rel)) {
+            if fs::symlink_metadata(&abs).is_ok_and(|m| m.is_file()) {
+                if let Ok(bytes) = fs::read(&abs) {
+                    digests.insert(rel.to_owned(), sha256_hex(&bytes));
+                }
+            }
+        }
+    };
+    record_file(ACDD_CONFIG_FILE);
+    record_file(".acdd/workflows/default.yaml");
+    for path in collect_profile_dir_files(worktree, &adapter.workflows_dirs, 3)
+        .into_iter()
+        .chain(collect_profile_dir_files(worktree, &adapter.specs_dirs, 3))
+    {
+        if let Ok(rel) = path.strip_prefix(worktree) {
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            record_file(&rel_str);
+        }
+    }
+    let effective_cols = acdd_spec::effective_spec_collections(&adapter.specs);
+    for col in effective_cols.values() {
+        let Ok(dirs) = col.resolve_dirs(worktree) else {
+            continue;
+        };
+        for dir in dirs {
+            for entry in WalkDir::new(&dir)
+                .into_iter()
+                .filter_entry(|e| {
+                    !e.file_type().is_symlink()
+                        && !(e.file_type().is_dir() && e.file_name() == "archive")
+                })
+                .filter_map(Result::ok)
+            {
+                let Some(name) = entry.file_name().to_str() else {
+                    continue;
+                };
+                if entry.file_type().is_file()
+                    && entry.path().extension().and_then(|e| e.to_str()) == Some("md")
+                    && !matches!(name, "README.md" | "AGENTS.md" | "CLAUDE.md")
+                {
+                    if let Ok(rel) = entry.path().strip_prefix(worktree) {
+                        let rel_str = rel.to_string_lossy().replace('\\', "/");
+                        if is_active_collection_spec_rel(&rel_str, col) {
+                            record_file(&rel_str);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let meta = json!({
+        "params": params,
+        "changed_paths": req.changed_paths,
+        "admitted_scope": req.admitted_scope,
+    });
+    digests.insert(
+        meta_key.to_owned(),
+        sha256_hex(meta.to_string().as_bytes()),
+    );
+    combine_file_hashes(&digests)
+}
+
 pub(super) fn budget_scored_items(kind: &str, items: Vec<(u64, Value)>, max_bytes: usize) -> Value {
     let mut envelope = serde_json::Map::new();
     envelope.insert("kind".to_owned(), json!(kind));
     pack_json_lens(envelope, items.into_iter(), max_bytes).0
-}
-
-pub(super) fn budget_items(kind: &str, items: Vec<Value>, max_bytes: usize) -> Value {
-    let total = items.len();
-    let scored = items
-        .into_iter()
-        .enumerate()
-        .map(|(index, item)| (u64::try_from(total - index).unwrap_or(u64::MAX), item))
-        .collect();
-    budget_scored_items(kind, scored, max_bytes)
 }
 
 #[cfg(test)]
@@ -347,10 +503,18 @@ pub(super) fn budget_items(kind: &str, items: Vec<Value>, max_bytes: usize) -> V
 fn budget_items_packs_ordered_candidates_within_budget() {
     use acdd_core::format::estimate_json_bytes;
 
+    let scored_of = |items: Vec<Value>| -> Vec<(u64, Value)> {
+        let total = items.len();
+        items
+            .into_iter()
+            .enumerate()
+            .map(|(index, item)| (u64::try_from(total - index).unwrap_or(u64::MAX), item))
+            .collect()
+    };
     let items = vec![json!("a".repeat(100)), json!("é"), json!("b")];
     let expected = json!({"kind":"symbols", "items":["é", "b"], "total":3, "truncated":true});
     let budget = estimate_json_bytes(&expected);
-    let result = budget_items("symbols", items, budget);
+    let result = budget_scored_items("symbols", scored_of(items), budget);
     assert_eq!(result, expected);
     assert_eq!(estimate_json_bytes(&result), budget);
     let complete = json!({"kind":"symbols", "items":["b", "c"], "total":2, "truncated":false});
@@ -363,7 +527,11 @@ fn budget_items_packs_ordered_candidates_within_budget() {
         ),
     ] {
         assert_eq!(
-            budget_items("symbols", vec![json!("b"), json!("c")], budget),
+            budget_scored_items(
+                "symbols",
+                scored_of(vec![json!("b"), json!("c")]),
+                budget
+            ),
             expected
         );
     }
@@ -380,7 +548,7 @@ fn budget_items_packs_ordered_candidates_within_budget() {
     );
     assert_eq!(scored["items"], json!(["hi-1", "hi-2"]));
     assert_eq!(scored["truncated"], true);
-    let empty = budget_items("symbols", vec![json!("oversized")], 0);
+    let empty = budget_scored_items("symbols", scored_of(vec![json!("oversized")]), 0);
     assert_eq!(empty["items"], json!([]));
     assert_eq!(empty["truncated"], true);
 }

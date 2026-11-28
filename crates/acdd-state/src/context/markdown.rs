@@ -237,6 +237,23 @@ fn render_contract_markdown(out: &mut String, contract: &Value) {
         }
     }
     if let Some(arr) = obj
+        .get("attached_specs")
+        .and_then(Value::as_array)
+        .filter(|a| !a.is_empty())
+    {
+        out.push_str("\n### Attached Specs\n\n");
+        for spec in arr {
+            let sid = spec.get("spec_id").and_then(Value::as_str).unwrap_or("?");
+            let stype = spec
+                .get("spec_type")
+                .and_then(Value::as_str)
+                .unwrap_or("contract");
+            let path = spec.get("path").and_then(Value::as_str).unwrap_or("");
+            let title = spec.get("title").and_then(Value::as_str).unwrap_or("");
+            out.push_str(&format!("- `{sid}` (`{stype}`, `{path}`): {title}\n"));
+        }
+    }
+    if let Some(arr) = obj
         .get("extended_scope")
         .and_then(Value::as_array)
         .filter(|a| !a.is_empty())
@@ -677,27 +694,119 @@ fn render_docs_invariants_lens(out: &mut String, val: &Value) {
     }
 }
 
+fn render_adrs_lens(out: &mut String, val: &Value) {
+    out.push_str("\n## Architectural Decision Records - MANDATORY\n\n");
+    out.push_str("Read relevant ADRs via `get_doc(path_or_id=...)` / `acdd docs get <path>`.\n\n");
+    for item in val
+        .get("items")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let title = item
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let path = item.get("path").and_then(Value::as_str).unwrap_or_default();
+        out.push_str(&format!("- {title}: `{path}`\n"));
+    }
+}
+
+fn render_generic_paths_lens(out: &mut String, key: &str, val: &Value) {
+    out.push_str(&format!("\n## Path Context (`{key}`)\n\n"));
+    out.push_str("Read relevant documents via `get_doc(path_or_id=...)` / `acdd docs get <path>`.\n\n");
+    let items = val
+        .get("items")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    for item in items {
+        let path = item.get("path").and_then(Value::as_str).unwrap_or_default();
+        let title = item
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !title.is_empty() && title != path {
+            out.push_str(&format!("- {title}: `{path}`\n"));
+        } else {
+            out.push_str(&format!("- `{path}`\n"));
+        }
+    }
+    let total = val
+        .get("total")
+        .and_then(Value::as_u64)
+        .unwrap_or(items.len() as u64) as usize;
+    let overflow = total.saturating_sub(items.len());
+    if overflow > 0 {
+        out.push_str(&format!("- ... (+{overflow} more)\n"));
+    }
+}
+
+fn render_specs_lens(out: &mut String, key: &str, val: &Value) {
+    out.push_str(&format!("\n## Spec Context (`{key}`)\n\n"));
+    let items = val
+        .get("items")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    for item in items {
+        let spec_id = item
+            .get("spec_id")
+            .or_else(|| item.get("id"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let path = item.get("path").and_then(Value::as_str).unwrap_or_default();
+        let item_ref = item.get("ref").and_then(Value::as_str).unwrap_or_default();
+        let status = item
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let summary = item
+            .get("statement")
+            .or_else(|| item.get("target"))
+            .or_else(|| item.get("title"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let label = if item_ref.is_empty() {
+            spec_id.to_owned()
+        } else {
+            format!("{spec_id}#{item_ref}")
+        };
+        let mut meta = Vec::new();
+        if !status.is_empty() {
+            meta.push(status.to_owned());
+        }
+        if !path.is_empty() {
+            meta.push(format!("`{path}`"));
+        }
+        let meta_str = if meta.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", meta.join(", "))
+        };
+        if summary.is_empty() {
+            out.push_str(&format!("- `{label}`{meta_str}\n"));
+        } else {
+            out.push_str(&format!("- `{label}`{meta_str}: {summary}\n"));
+        }
+    }
+    let total = val
+        .get("total")
+        .and_then(Value::as_u64)
+        .unwrap_or(items.len() as u64) as usize;
+    let overflow = total.saturating_sub(items.len());
+    if overflow > 0 {
+        out.push_str(&format!("- ... (+{overflow} more)\n"));
+    }
+}
+
 fn render_context_lenses_markdown(out: &mut String, lenses: &Map<String, Value>) {
     for (key, val) in lenses {
         match key.as_str() {
-            "docs.instructions" => render_instructions_lens(out, val),
-            "docs.adrs" => {
-                out.push_str("\n## Architectural Decision Records - MANDATORY\n\n");
-                out.push_str("Read relevant ADRs via `get_doc(path_or_id=...)` / `acdd docs get <path>`.\n\n");
-                for item in val
-                    .get("items")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                {
-                    let title = item
-                        .get("title")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default();
-                    let path = item.get("path").and_then(Value::as_str).unwrap_or_default();
-                    out.push_str(&format!("- {title}: `{path}`\n"));
-                }
-            }
+            "paths.instructions" => render_instructions_lens(out, val),
+            "paths.adrs" => render_adrs_lens(out, val),
+            other if other.starts_with("paths.") => render_generic_paths_lens(out, other, val),
+            other if other.starts_with("specs.") => render_specs_lens(out, other, val),
             "docs.workspace_config" => render_workspace_config_lens(out, val),
             "docs.invariants" => render_docs_invariants_lens(out, val),
             "code.symbols" => {

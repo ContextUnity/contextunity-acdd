@@ -20,6 +20,17 @@ default_tools:
   - acdd_submit
   - acdd_blackboard
 
+paths:
+  docs:
+    - "docs/**"
+    - "AGENTS.md"
+    - "README.md"
+  adrs:
+    - "docs/adr/**"
+  instructions:
+    - "**/AGENTS.md"
+    - "TESTS.md"
+
 limits:
   max_guidance_bytes: 32768
   max_log_bytes: 1048576

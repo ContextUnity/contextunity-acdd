@@ -7,13 +7,15 @@ use super::schema::{
 };
 use super::when::{normalize_optional_when, WhenExpr};
 use crate::types::SaveAction;
-use acdd_core::errors::{ErrorCode, AcddError};
-use acdd_core::fs::{checked_child, is_normalized_relative, open_confined};
-use acdd_core::ids::{is_valid_short_hex_prefix, GateId};
+use acdd_core::config::{
+    parse_confined_ref, read_confined_ref_bytes, resolve_confined_ref_path,
+    verify_confined_sha256_prefix,
+};
+use acdd_core::errors::{AcddError, ErrorCode};
+use acdd_core::fs::checked_child;
+use acdd_core::ids::GateId;
 use acdd_core::subsystems::SubsystemRegistry;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::OpenOptions;
-use std::io::Read;
 use std::path::Path;
 
 const BASE_YAML: &str = include_str!("embedded/base.yaml");
@@ -319,40 +321,13 @@ fn resolve_workflow_path_in_workspace(
     explicit_dirs: Option<&[String]>,
 ) -> Result<String, AcddError> {
     let workflows_dirs = effective_workflows_dirs(root, explicit_dirs)?;
-    if std::fs::symlink_metadata(root.join(raw_rel)).is_ok_and(|m| !m.is_dir()) {
-        return Ok(raw_rel.to_owned());
-    }
-    for dir in &workflows_dirs {
-        let dir_clean = dir.trim().trim_end_matches('/');
-        if dir_clean.is_empty() {
-            continue;
-        }
-        let mut candidates = Vec::new();
-        if raw_rel.ends_with(".yaml") || raw_rel.ends_with(".yml") {
-            candidates.push(format!("{dir_clean}/{raw_rel}"));
-        } else {
-            candidates.push(format!("{dir_clean}/{raw_rel}.yaml"));
-            candidates.push(format!("{dir_clean}/{raw_rel}.yml"));
-            candidates.push(format!("{dir_clean}/{raw_rel}"));
-        }
-        for cand in candidates {
-            if !is_normalized_relative(Path::new(&cand)) {
-                continue;
-            }
-            if std::fs::symlink_metadata(root.join(&cand)).is_ok() {
-                let checked = checked_child(root, Path::new(&cand)).map_err(|err| {
-                    AcddError::new(
-                        ErrorCode::WorkflowSchemaInvalid,
-                        format!("workflow path '{cand}' failed confinement check: {err}"),
-                    )
-                })?;
-                if checked.is_file() {
-                    return Ok(cand);
-                }
-            }
-        }
-    }
-    Ok(raw_rel.to_owned())
+    resolve_confined_ref_path(
+        root,
+        raw_rel,
+        &workflows_dirs,
+        ErrorCode::WorkflowSchemaInvalid,
+        "workflow",
+    )
 }
 
 pub(crate) fn workflow_lineage_paths(
@@ -560,6 +535,12 @@ fn has_domain_prefix(qualified: &str, domain: &str) -> bool {
         .is_some_and(|(prefix, _)| prefix == domain)
 }
 
+fn context_belongs_to_domain(qualified: &str, domain: &str) -> bool {
+    has_domain_prefix(qualified, domain)
+        || (domain == "docs"
+            && (has_domain_prefix(qualified, "paths") || has_domain_prefix(qualified, "specs")))
+}
+
 fn strip_disabled_domain_capabilities(
     working: &mut WorkingWorkflow,
     disabled_domains: &BTreeSet<String>,
@@ -594,7 +575,7 @@ fn strip_disabled_domains_from_gates(
         });
         gate.gate
             .context
-            .retain(|ctx| !disabled_domains.iter().any(|d| has_domain_prefix(ctx, d)));
+            .retain(|ctx| !disabled_domains.iter().any(|d| context_belongs_to_domain(ctx, d)));
         gate.gate.guidance.retain(|g| match g {
             super::schema::GateGuidanceRef::Slot(slot) => {
                 !disabled_domains.iter().any(|d| has_domain_prefix(slot, d))
@@ -622,61 +603,18 @@ fn strip_disabled_domains_from_gates(
 }
 
 fn parse_path_and_pin(raw: &str) -> Result<(String, Option<String>), AcddError> {
-    let (path_part, pin_part) = match raw.rsplit_once(':') {
-        Some((p, pin)) if !p.is_empty() && !pin.is_empty() => (p, Some(pin)),
-        Some((_, _)) => {
-            return Err(AcddError::new(
-                ErrorCode::WorkflowSchemaInvalid,
-                format!("malformed profile reference '{raw}'"),
-            ));
-        }
-        None => (raw, None),
-    };
-    if embedded_workflow(path_part).is_some() || path_part == "none" {
+    let base_name = raw.rsplit_once(':').map_or(raw, |(p, _)| p);
+    if embedded_workflow(base_name).is_some() || base_name == "none" {
         return Err(AcddError::new(
             ErrorCode::WorkflowSchemaInvalid,
-            format!("built-in workflow reference '{path_part}' cannot carry a SHA-256 pin"),
+            format!("built-in workflow reference '{base_name}' cannot carry a SHA-256 pin"),
         ));
     }
-    if !is_normalized_relative(Path::new(path_part)) {
-        return Err(AcddError::new(
-            ErrorCode::WorkflowSchemaInvalid,
-            format!(
-                "inherited profile path '{path_part}' must be a normalized workspace-relative path"
-            ),
-        ));
-    }
-    let normalized_pin = match pin_part {
-        Some(pin) => {
-            if !is_valid_short_hex_prefix(pin) {
-                return Err(AcddError::new(
-                    ErrorCode::WorkflowSchemaInvalid,
-                    format!("inherit SHA-256 prefix '{pin}' must be 7..=64 hexadecimal characters"),
-                ));
-            }
-            Some(pin.to_ascii_lowercase())
-        }
-        None => None,
-    };
-    Ok((path_part.to_owned(), normalized_pin))
+    parse_confined_ref(raw, ErrorCode::WorkflowSchemaInvalid, "workflow")
 }
 
 fn read_confined_profile_bytes(root: &Path, rel_path: &str) -> Result<Vec<u8>, AcddError> {
-    let mut file = open_confined(root, Path::new(rel_path), OpenOptions::new().read(true))
-        .map_err(|err| {
-            AcddError::new(
-                ErrorCode::WorkflowSchemaInvalid,
-                format!("failed to open inherited profile '{rel_path}': {err}"),
-            )
-        })?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).map_err(|err| {
-        AcddError::new(
-            ErrorCode::WorkflowSchemaInvalid,
-            format!("failed to read inherited profile '{rel_path}': {err}"),
-        )
-    })?;
-    Ok(bytes)
+    read_confined_ref_bytes(root, rel_path, ErrorCode::WorkflowSchemaInvalid, "workflow")
 }
 
 fn verify_sha256_prefix(
@@ -684,16 +622,13 @@ fn verify_sha256_prefix(
     expected_prefix_lower: &str,
     rel_path: &str,
 ) -> Result<(), AcddError> {
-    let actual = acdd_core::format::sha256_hex(raw_bytes);
-    if !actual.starts_with(expected_prefix_lower) {
-        return Err(AcddError::new(
-            ErrorCode::WorkflowSchemaInvalid,
-            format!(
-                "inherit SHA-256 pin mismatch for '{rel_path}': expected prefix '{expected_prefix_lower}', got '{actual}'"
-            ),
-        ));
-    }
-    Ok(())
+    verify_confined_sha256_prefix(
+        raw_bytes,
+        expected_prefix_lower,
+        rel_path,
+        ErrorCode::WorkflowSchemaInvalid,
+        "workflow",
+    )
 }
 
 fn apply_parsed_layer(
@@ -789,6 +724,17 @@ fn apply_parsed_layer(
             }
             Some(g) => {
                 res.guidance.insert(slot, g);
+            }
+        }
+    }
+
+    for (name, globs_opt) in parsed.paths {
+        match globs_opt {
+            None => {
+                res.paths.remove(&name);
+            }
+            Some(globs) => {
+                res.paths.insert(name, globs);
             }
         }
     }

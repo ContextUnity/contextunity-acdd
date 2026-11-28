@@ -70,6 +70,7 @@ fn embedded_profiles_inheritance_pinning_and_patch_merge_matrix() {
             domain_providers: Some(providers.as_ref()),
             acdd_modules: mods,
             require_bound_commands: require_bound,
+            spec_collections: None,
         };
         let actual = validate_workflow(&resolved, &opts).map_err(|e| e.code);
         assert_eq!(actual, expected, "embedded workflow {name}");
@@ -116,6 +117,7 @@ gates_patch:
             domain_providers: Some(providers.as_ref()),
             acdd_modules: None,
             require_bound_commands: true,
+            spec_collections: None,
         },
     )
     .expect("pinned child with http_ping plugin tool must validate");
@@ -184,6 +186,7 @@ gates_patch:
                             domain_providers: Some(providers.as_ref()),
                             acdd_modules: None,
                             require_bound_commands: false,
+                            spec_collections: None,
                         },
                     )
                 });

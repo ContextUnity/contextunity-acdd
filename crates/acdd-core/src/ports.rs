@@ -236,6 +236,12 @@ pub struct DomainContextReq {
     /// Optional commit or tree OID representing claim-time baseline (`HEAD` when absent).
     #[serde(default)]
     pub baseline_ref: Option<String>,
+    /// Resolved path globs for `paths.<name>` or `docs.invariants` (`paths.docs`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lens_globs: Vec<String>,
+    /// Owning Spec body and citation context used for Tier 1 direct ID/title matching.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub citation_text: Option<String>,
 }
 
 /// Request context passed to `DomainProvider::call_tool`.
@@ -428,7 +434,7 @@ pub struct CompositeDomainProvider {
 impl CompositeDomainProvider {
     /// Register domain providers while honoring explicit `modules:` enablement flags (`domain_id -> bool`).
     ///
-    /// Built-in `"code"` and `"docs"` default to enabled (`true`) when absent from `enabled_flags`;
+    /// Built-in `"code"`, `"docs"`, and `"spec"` default to enabled (`true`) when absent from `enabled_flags`;
     /// external domain providers default to disabled (`false`) unless explicitly enabled.
     pub fn with_module_flags(
         providers: Vec<Arc<dyn DomainProvider>>,
@@ -484,7 +490,7 @@ impl CompositeDomainProvider {
                 );
             }
 
-            let default_enabled = matches!(domain_id.as_str(), "code" | "docs");
+            let default_enabled = matches!(domain_id.as_str(), "code" | "docs" | "spec");
             let enabled = enabled_flags
                 .get(&domain_id)
                 .copied()
@@ -586,6 +592,10 @@ impl CompositeDomainProvider {
     /// Validate a qualified context lens reference (`<domain>.<lens>`) fail-closed.
     pub fn validate_context_lens(&self, qualified: &str) -> std::result::Result<(), AcddError> {
         let (domain, lens_name) = split_qualified(qualified, "context lens")?;
+        if matches!(domain, "paths" | "specs") {
+            let _ = self.active_provider("docs")?;
+            return Ok(());
+        }
         let entry = self.active_provider(domain)?;
         if !entry.capabilities.context_lenses.contains(lens_name) {
             return Err(AcddError::new(
@@ -686,6 +696,10 @@ impl CompositeDomainProvider {
     pub fn provide_context(&self, qualified: &str, req: &DomainContextReq) -> Result<Value> {
         self.validate_context_lens(qualified)?;
         let (domain, lens_name) = split_qualified(qualified, "context lens")?;
+        if matches!(domain, "paths" | "specs") {
+            let entry = self.active_provider("docs")?;
+            return entry.provider.provide_context(qualified, req);
+        }
         let entry = self.active_provider(domain)?;
         entry.provider.provide_context(lens_name, req)
     }
@@ -1059,6 +1073,8 @@ mod tests {
             max_bytes: 4096,
             path_policy: WorkspacePathPolicy::default(),
             baseline_ref: None,
+            lens_globs: Vec::new(),
+            citation_text: None,
         };
         let tool_req = DomainToolReq {
             workspace_root: PathBuf::from("/repo"),

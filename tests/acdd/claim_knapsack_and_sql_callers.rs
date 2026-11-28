@@ -79,6 +79,13 @@ fn sample_claim_request(
     let tree = TreeOid::new("1".repeat(40)).unwrap();
     let commit = CommitOid::new("2".repeat(40)).unwrap();
     let mut profile = ResolvedWorkflow::default();
+    profile.paths.insert(
+        "instructions".to_owned(),
+        vec!["**/AGENTS.md".to_owned(), "TESTS.md".to_owned()],
+    );
+    profile
+        .paths
+        .insert("adrs".to_owned(), vec!["docs/adr/**".to_owned()]);
     profile.guidance.insert(
         "g1".to_owned(),
         GuidanceEntry::Text("Follow rules".to_owned()),
@@ -102,6 +109,7 @@ fn sample_claim_request(
         spec_path: Some("docs/milestones/UX-003.md".to_owned()),
         spec_id: None,
         spec_digest: "a".repeat(64),
+        attached_specs: Vec::new(),
         is_ephemeral: false,
         isolation: IsolationMode::Worktree,
         target_base: Some("main".to_owned()),
@@ -154,6 +162,7 @@ fn sample_claim_request(
         status: SpecStatus::Active,
         cancellation_reason: None,
         spec: Some("Root".to_owned()),
+        goal: None,
         depends_on: Vec::new(),
         owners: Vec::new(),
         invariants: Vec::new(),
@@ -163,6 +172,8 @@ fn sample_claim_request(
         repositories: Vec::new(),
         linked_to: Vec::new(),
         closure: None,
+        spec_deltas: Vec::new(),
+        fields: BTreeMap::new(),
         tasks: vec![TaskSpec {
             task_ref: TaskRef::new("t1").unwrap(),
             target: Some(target.to_owned()),
@@ -178,6 +189,7 @@ fn sample_claim_request(
             subtasks: Vec::new(),
             receipt: None,
         }],
+        items: BTreeMap::new(),
         body: String::new(),
         digest: "b".repeat(64),
     };
@@ -325,7 +337,7 @@ pub fn pack_target_beta(y: usize) -> usize { y + 2 }
     let bare = GateContextAssembler::assemble(&baseline_req, &real_provider).unwrap();
     let full_req = sample_claim_request(
         root.to_path_buf(),
-        vec!["docs.instructions".to_owned(), "code.symbols".to_owned()],
+        vec!["paths.instructions".to_owned(), "code.symbols".to_owned()],
         vec!["src/lib.rs".to_owned()],
         "Implement pack_target_alpha and pack_target_beta",
         32_768,
@@ -336,12 +348,12 @@ pub fn pack_target_beta(y: usize) -> usize { y + 2 }
         .unwrap();
     assert_eq!(full_syms.len(), 3);
 
-    // Budget tightly: enough for Tier 1 + docs.instructions + two target symbols, too tight for all 3.
+    // Budget tightly: enough for Tier 1 + paths.instructions + two target symbols, too tight for all 3.
     let tight_budget = full.total_bytes - 100;
     assert!(tight_budget > bare.total_bytes);
     let tight_req = sample_claim_request(
         root.to_path_buf(),
-        vec!["docs.instructions".to_owned(), "code.symbols".to_owned()],
+        vec!["paths.instructions".to_owned(), "code.symbols".to_owned()],
         vec!["src/lib.rs".to_owned()],
         "Implement pack_target_alpha and pack_target_beta",
         tight_budget,
@@ -349,7 +361,7 @@ pub fn pack_target_beta(y: usize) -> usize { y + 2 }
     let tight = GateContextAssembler::assemble(&tight_req, &real_provider).unwrap();
     assert_eq!(tight.total_bytes, serde_json::to_vec(&tight).unwrap().len());
     assert!(tight.total_bytes <= tight_budget);
-    assert!(tight.context_lenses.contains_key("docs.instructions"));
+    assert!(tight.context_lenses.contains_key("paths.instructions"));
     let sym_names: Vec<&str> = tight.context_lenses["code.symbols"]["items"]
         .as_array()
         .unwrap()
@@ -754,7 +766,7 @@ fn compact_claim_budget_detail_and_lens_compaction_matrix() {
     let mut direct_req = sample_claim_request(
         root.to_path_buf(),
         vec![
-            "docs.instructions".to_owned(),
+            "paths.instructions".to_owned(),
             "code.symbols".to_owned(),
             "code.external_callers".to_owned(),
         ],
@@ -792,8 +804,8 @@ fn compact_claim_budget_detail_and_lens_compaction_matrix() {
     let assembled = GateContextAssembler::assemble(&direct_req, &provider).unwrap();
     let md = render_claim_prompt_markdown(&assembled, None);
 
-    // docs.instructions omits headings TOC.
-    for item in assembled.context_lenses["docs.instructions"]["items"]
+    // paths.instructions omits headings TOC.
+    for item in assembled.context_lenses["paths.instructions"]["items"]
         .as_array()
         .unwrap()
     {
@@ -903,7 +915,7 @@ fn compact_claim_budget_detail_and_lens_compaction_matrix() {
 
     std::fs::write(
         root.join(".acdd/workflows/compact_test.yaml"),
-        "version: 2\ninherit: code\ngit:\n  isolation: in_place\n  worktrees: manual\ncommands:\n  build_check:\n    command: \"true\"\n  verify_all:\n    command: \"true\"\ngates:\n  - tasks:\n      gates:\n        - id: build\n          role: builder\n          command: build_check\n          proof: command\n          guidance: [task.code, core.execution, code.principles, code.tools, hitl.pro]\n          context: [docs.instructions, docs.adrs, docs.invariants, code.symbols, code.tests, code.external_callers]\n          pass: review\n        - id: review\n          role: independent_reviewer\n          proof: none\n          independent_from: [build]\n          need: [build]\n          pass: deliver\n        - id: deliver\n          role: independent_reviewer\n          independent_from: [build]\n          need: [build, review]\n          receipt: true\n",
+        "version: 2\ninherit: code\ngit:\n  isolation: in_place\n  worktrees: manual\ncommands:\n  build_check:\n    command: \"true\"\n  verify_all:\n    command: \"true\"\ngates:\n  - tasks:\n      gates:\n        - id: build\n          role: builder\n          command: build_check\n          proof: command\n          guidance: [task.code, core.execution, code.principles, code.tools, hitl.pro]\n          context: [paths.instructions, paths.adrs, docs.invariants, code.symbols, code.tests, code.external_callers]\n          pass: review\n        - id: review\n          role: independent_reviewer\n          proof: none\n          independent_from: [build]\n          need: [build]\n          pass: deliver\n        - id: deliver\n          role: independent_reviewer\n          independent_from: [build]\n          need: [build, review]\n          receipt: true\n",
     )
     .unwrap();
     let mut cfg = crate::acdd::support::base_engine_config(root);

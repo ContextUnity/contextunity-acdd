@@ -192,6 +192,7 @@ fn embedded_profiles_resolve_and_validate_matrix() {
             domain_providers: Some(&providers),
             acdd_modules: mods,
             require_bound_commands: require_bound,
+            spec_collections: None,
         };
         let res = validate_workflow(&resolved, &opts);
         match expected {
@@ -269,7 +270,7 @@ fn embedded_profiles_resolve_and_validate_matrix() {
     assert_eq!(code_p.effective_tools(code_build).len(), 18);
     assert_eq!(
         code_build.context.first().map(String::as_str),
-        Some("docs.instructions")
+        Some("paths.instructions")
     );
     let code_rearch = code_tasks
         .gates
@@ -281,8 +282,8 @@ fn embedded_profiles_resolve_and_validate_matrix() {
     assert_eq!(
         code_rearch.context,
         vec![
-            "docs.instructions",
-            "docs.adrs",
+            "paths.instructions",
+            "paths.adrs",
             "docs.invariants",
             "code.symbols"
         ]
@@ -434,8 +435,8 @@ fn embedded_profiles_resolve_and_validate_matrix() {
     assert_eq!(
         doc_build.context,
         vec![
-            "docs.instructions",
-            "docs.adrs",
+            "paths.instructions",
+            "paths.adrs",
             "docs.invariants",
             "code.symbols"
         ]
@@ -468,6 +469,7 @@ fn embedded_profiles_resolve_and_validate_matrix() {
             domain_providers: Some(&providers),
             acdd_modules: None,
             require_bound_commands: true,
+            spec_collections: None,
         },
     )
     .unwrap();
@@ -499,8 +501,8 @@ fn embedded_profiles_resolve_and_validate_matrix() {
         sp_synth.context,
         vec![
             "docs.workspace_config",
-            "docs.instructions",
-            "docs.adrs",
+            "paths.instructions",
+            "paths.adrs",
             "docs.invariants",
         ]
     );
@@ -520,6 +522,7 @@ fn embedded_profiles_resolve_and_validate_matrix() {
             domain_providers: Some(&providers),
             acdd_modules: None,
             require_bound_commands: true,
+            spec_collections: None,
         },
     )
     .unwrap();
@@ -535,6 +538,7 @@ fn embedded_profiles_resolve_and_validate_matrix() {
                 domain_providers: Some(&providers),
                 acdd_modules: Some(mods),
                 require_bound_commands: false,
+                spec_collections: None,
             },
         )
         .unwrap_err();
@@ -788,6 +792,7 @@ fn profile_schema_and_legacy_rejection_matrix() {
         domain_providers: Some(&providers),
         acdd_modules: None,
         require_bound_commands: false,
+        spec_collections: None,
     };
 
     for &(label, yaml, expected_code) in cases {
@@ -948,6 +953,7 @@ gates:
         domain_providers: Some(&providers),
         acdd_modules: None,
         require_bound_commands: true,
+        spec_collections: None,
     };
 
     // Valid pinned inherit + null deletion + field-wise patch + cursor + structural when + after/before + delete
@@ -1357,6 +1363,7 @@ gates:
             domain_providers: Some(&full_providers),
             acdd_modules: mods,
             require_bound_commands: false,
+            spec_collections: None,
         };
         let res = validate_workflow(&resolved, &opts);
         match expected {
@@ -1388,6 +1395,7 @@ fn v061_profile_purity_docs_strip_patches_and_scope_args_matrix() {
             domain_providers: Some(&providers),
             acdd_modules: Some(&docs_disabled),
             require_bound_commands: false,
+            spec_collections: None,
         },
     )
     .unwrap();
@@ -1419,6 +1427,7 @@ fn v061_profile_purity_docs_strip_patches_and_scope_args_matrix() {
             domain_providers: Some(&providers),
             acdd_modules: Some(&disabled_code_and_docs_modules()),
             require_bound_commands: false,
+            spec_collections: None,
         },
     )
     .unwrap();
@@ -1455,6 +1464,7 @@ fn v061_profile_purity_docs_strip_patches_and_scope_args_matrix() {
             domain_providers: Some(&providers),
             acdd_modules: None,
             require_bound_commands: true,
+            spec_collections: None,
         },
     )
     .unwrap();
@@ -1569,6 +1579,7 @@ fn v061_profile_purity_docs_strip_patches_and_scope_args_matrix() {
             domain_providers: Some(&providers),
             acdd_modules: None,
             require_bound_commands: false,
+            spec_collections: None,
         },
     )
     .unwrap();
@@ -1588,6 +1599,7 @@ fn v061_profile_purity_docs_strip_patches_and_scope_args_matrix() {
             domain_providers: Some(&providers),
             acdd_modules: None,
             require_bound_commands: false,
+            spec_collections: None,
         },
     )
     .unwrap_err();
@@ -1615,6 +1627,7 @@ fn v061_profile_purity_docs_strip_patches_and_scope_args_matrix() {
             domain_providers: Some(&providers),
             acdd_modules: None,
             require_bound_commands: false,
+            spec_collections: None,
         },
     )
     .unwrap_err();
@@ -2018,7 +2031,7 @@ fn embedded_documentation_profile_in_memory_lifecycle_and_routing() {
             prof.git.worktrees = WorktreeLifecycle::Manual;
             prof.save = SaveAction::None;
         }
-        let mprof = to_machine_profile(&prof).unwrap();
+        let mprof = to_machine_profile(&prof, None).unwrap();
         let rid = RunId::new(format!("run-doc-{mode}")).unwrap();
         let rname = RunName::new(format!("doc-{mode}")).unwrap();
         let goal_md = materialize_ephemeral_goal_spec_with_options(

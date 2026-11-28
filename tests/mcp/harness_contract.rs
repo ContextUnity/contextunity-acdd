@@ -138,12 +138,12 @@ fn mcp_claim_and_next_preserve_worker_independence_and_session_metadata() {
     let config = |cap| {
         format!("roots: [src/]\nspecs:\n  milestones:\n    path: docs/milestones\nresponse:\n  max_output_bytes: {cap}\n")
     };
-    workspace.write("acdd.yaml", &config(4096));
     for (next, cap, root_source, local_source, descendants) in [
         (false, 4096, root_rules, local_rules.as_str(), 0),
         (true, 2048, long_root.as_str(), long_local.as_str(), 0),
         (true, 2048, long_root.as_str(), long_local.as_str(), 9),
     ] {
+        workspace.write("acdd.yaml", &config(8192));
         workspace.write("AGENTS.md", root_source);
         workspace.write("src/AGENTS.md", local_source);
         if descendants > 0 {
@@ -168,7 +168,7 @@ fn mcp_claim_and_next_preserve_worker_independence_and_session_metadata() {
         let claim_args = json!({
             "node":"first.build","worker_id":"builder","worktree":workspace.root(),"format":"json"
         });
-        if cap < 4096 {
+        if cap < 8192 {
             // Bind the candidate with the normal config before changing the response budget.
             builder
                 .payload("acdd_claim", claim_args.clone())
@@ -204,7 +204,7 @@ fn mcp_claim_and_next_preserve_worker_independence_and_session_metadata() {
         );
         assert!(bytes <= cap, "claim response used {bytes} bytes");
         assert_eq!(build_claim["context_lenses"].as_object().unwrap().len(), 1);
-        let instructions = &build_claim["context_lenses"]["docs.instructions"];
+        let instructions = &build_claim["context_lenses"]["paths.instructions"];
         assert_eq!(
             instructions["directive"],
             "MANDATORY: read repository rules for respective scope."
@@ -253,7 +253,7 @@ fn mcp_claim_and_next_preserve_worker_independence_and_session_metadata() {
             .expect("detail=full MCP claim should succeed");
         assert!(full_claim["total_bytes"].as_u64().unwrap() <= 32_768);
 
-        workspace.write("acdd.yaml", &config(4096));
+        workspace.write("acdd.yaml", &config(8192));
         builder
             .payload(
                 "acdd_submit",
@@ -594,7 +594,7 @@ fn mcp_relative_worktrees_custom_dbs_and_extra_providers_contract() {
         ("acdd.yaml", "roots: [src/]\ndocs: [docs/]\nmodules:\n  domains:\n    probe: true\n"),
         ("src/lib.rs", "pub fn target_fn() -> i32 { 42 }\n#[cfg(test)]\nmod tests { #[test] fn covers_target() { assert_eq!(super::target_fn(), 42); } }\n"),
         ("docs/adr/0001-custom-db.md", "---\ntitle: Custom DB ADR\ndoc_type: adr\n---\n# Custom DB ADR\n"),
-        (".acdd/workflows/default.yaml", "version: 2\ngit:\n  isolation: in_place\n  worktrees: manual\nroles:\n  worker: {mode: subagent}\ngates:\n  - id: execute\n    role: worker\n    proof: none\n    checks: []\n    context: [docs.adrs]\n    save:\n      post: none\n      prune: true\n"),
+        (".acdd/workflows/default.yaml", "version: 2\ngit:\n  isolation: in_place\n  worktrees: manual\npaths:\n  adrs: [\"docs/adr/**\"]\nroles:\n  worker: {mode: subagent}\ngates:\n  - id: execute\n    role: worker\n    proof: none\n    checks: []\n    context: [paths.adrs]\n    save:\n      post: none\n      prune: true\n"),
     ]);
     workspace.seed_git().unwrap();
     let rel_wt = workspace.path(".worktrees/wt-rel");
@@ -674,7 +674,7 @@ fn mcp_relative_worktrees_custom_dbs_and_extra_providers_contract() {
             "acdd_claim",
             json!({"run":&run_id,"node":"execute","worker_id":"builder","worktree":wt_sel,"format":"json"}),
         );
-        assert!(claim["context_lenses"]["docs.adrs"]["items"]
+        assert!(claim["context_lenses"]["paths.adrs"]["items"]
             .as_array()
             .is_some_and(|a| a.iter().any(|i| i["path"] == "docs/adr/0001-custom-db.md")));
         assert_eq!(
@@ -768,6 +768,8 @@ fn mcp_relative_worktrees_custom_dbs_and_extra_providers_contract() {
                     max_bytes: 16_384,
                     path_policy: Default::default(),
                     baseline_ref: None,
+                    lens_globs: Vec::new(),
+                    citation_text: None,
                 }
             )
             .unwrap(),
@@ -805,7 +807,7 @@ fn mcp_relative_worktrees_custom_dbs_and_extra_providers_contract() {
     );
     let adrs = custom_providers
         .provide_context(
-            "docs.adrs",
+            "paths.adrs",
             &DomainContextReq {
                 run_id: "custom-db-check".parse().unwrap(),
                 node_cursor: "execute".parse().unwrap(),
@@ -817,6 +819,8 @@ fn mcp_relative_worktrees_custom_dbs_and_extra_providers_contract() {
                 max_bytes: 16_384,
                 path_policy: Default::default(),
                 baseline_ref: None,
+                lens_globs: vec!["docs/adr/**".to_owned()],
+                citation_text: None,
             },
         )
         .unwrap();

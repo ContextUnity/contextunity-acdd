@@ -542,6 +542,7 @@ pub(super) fn apply_tier6_context_lenses(
             .and_then(|spec| spec.tasks.iter().find(|t| &t.task_ref == tref))
             .and_then(|t| t.target.clone())
     });
+    let citation_text = build_citation_text(req, target.as_deref());
 
     let optional_target_cap = req.optional_target_cap();
     let mut budget_exhausted = false;
@@ -606,6 +607,17 @@ pub(super) fn apply_tier6_context_lenses(
         } else {
             admitted_scope.clone()
         };
+        let lens_globs = if let Some(path_name) = qualified_lens.strip_prefix("paths.") {
+            req.profile.paths.get(path_name).cloned().unwrap_or_default()
+        } else if qualified_lens == "docs.invariants" {
+            req.profile
+                .paths
+                .get("docs")
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let ctx_req = DomainContextReq {
             run_id: req.run.run_id.clone(),
             node_cursor: node_cursor.clone(),
@@ -617,6 +629,8 @@ pub(super) fn apply_tier6_context_lenses(
             max_bytes: lens_budget,
             path_policy: req.path_policy.clone(),
             baseline_ref,
+            lens_globs,
+            citation_text: citation_text.clone(),
         };
 
         let val = provider
@@ -672,4 +686,37 @@ pub(super) fn apply_tier6_context_lenses(
     }
 
     Ok(())
+}
+
+fn build_citation_text(req: &ClaimContextRequest, target: Option<&str>) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(t) = target.map(str::trim).filter(|s| !s.is_empty()) {
+        parts.push(t.to_owned());
+    }
+    if let Some(tref) = req.node.task_ref.as_ref() {
+        parts.push(tref.as_str().to_owned());
+    }
+    if let Some(spec) = req.spec.as_ref() {
+        parts.push(spec.id.clone());
+        if !spec.title.trim().is_empty() {
+            parts.push(spec.title.clone());
+        }
+        if let Some(goal) = spec.goal.as_deref().filter(|s| !s.trim().is_empty()) {
+            parts.push(goal.to_owned());
+        }
+        if !spec.acceptance_criteria.is_empty() {
+            parts.push(spec.acceptance_criteria.join("\n"));
+        }
+        if let Some(tref) = req.node.task_ref.as_ref() {
+            if let Some(task) = spec.tasks.iter().find(|t| &t.task_ref == tref) {
+                if !task.acceptance_criteria.is_empty() {
+                    parts.push(task.acceptance_criteria.join("\n"));
+                }
+            }
+        }
+        if !spec.body.trim().is_empty() {
+            parts.push(spec.body.clone());
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("\n"))
 }

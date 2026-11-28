@@ -259,6 +259,7 @@ fn audit_all_47_fixtures_for_060_validity_and_negative_error_codes() {
         domain_providers: Some(providers.as_ref()),
         acdd_modules: None,
         require_bound_commands: true,
+        spec_collections: None,
     };
 
     let ws = Workspace::new();

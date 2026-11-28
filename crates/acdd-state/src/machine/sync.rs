@@ -548,7 +548,12 @@ impl<'a> SyncPlanBuilder<'a> {
                 } else {
                     child.status
                 };
-                upsert_reconciled_node(&mut self.acc, child, demoted, t_task, &inv);
+                let gate_template = self
+                    .target_by_id
+                    .get(child.node_id.as_str())
+                    .copied()
+                    .unwrap_or(t_task);
+                upsert_reconciled_node(&mut self.acc, child, demoted, gate_template, &inv);
             }
         }
 

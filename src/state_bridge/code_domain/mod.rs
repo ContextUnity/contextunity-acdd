@@ -824,6 +824,8 @@ mod tests {
                     max_bytes: crate::state_bridge::common::TEST_LARGE_CONTEXT_MAX_BYTES,
                     path_policy: acdd_core::path_policy::WorkspacePathPolicy::default(),
                     baseline_ref: None,
+                    lens_globs: Vec::new(),
+                    citation_text: None,
                 },
             )
             .unwrap();
