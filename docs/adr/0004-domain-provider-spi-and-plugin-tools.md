@@ -37,7 +37,7 @@ Hardcoding AST seam checks, documentation link checks, or language-specific heur
 
 ### 3. Host Providers and Thin Shim-Crate Extensions
 
-- **Host providers ([`src/state_bridge/mod.rs`](../../src/state_bridge/mod.rs))**: `build_domain_providers` registers `CodeDomainProvider` (`domain_id = "code"`: `code.seam`, `code.lint`, `code.signature_scope`, `code.symbols`, `code.tests`, `code.external_callers`) and `DocsDomainProvider` (`domain_id = "docs"`: `docs.links`, `docs.instructions`, `docs.adrs`, `docs.invariants`), both with `tools: []`.
+- **Host providers ([`src/state_bridge/mod.rs`](../../src/state_bridge/mod.rs))**: `build_domain_providers` registers `CodeDomainProvider` (`domain_id = "code"`: `code.seam`, `code.lint`, `code.signature_scope`, `code.symbols`, `code.tests`, `code.external_callers`), `DocsDomainProvider` (`domain_id = "docs"`: `docs.links`, `docs.specs`, `docs.invariants`, `docs.workspace_config`, `paths.<name>`, `specs.<collection>`), and `SpecDomainProvider` (`domain_id = "spec"`: `spec.deltas_applied`), all with `tools: []`.
   - Replacing legacy default-blocking signature-scope heuristics, `code.external_callers` surfaces modified-signature callers non-blockingly via `ClaimResp.context_lenses`, while `code.signature_scope` remains available as an opt-in `checks:` rule.
 - **External thin shim-crates (`crates/acdd-domain-<name>`)**: New verification domains live in thin shim-crates depending solely on `acdd-core` plus an existing Rust ecosystem library (never `acdd-state` or `acdd-index`), wired once in `src/state_bridge/mod.rs` and gated by `modules.domains.<name>` in `acdd.yaml`. See the practical [domain extensions guide](../architecture/domain-extensions.md).
 

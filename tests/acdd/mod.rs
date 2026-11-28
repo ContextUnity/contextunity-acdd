@@ -7,5 +7,6 @@ mod lint_gate_and_docs_profile;
 mod profiles_and_inheritance;
 mod roadmap_cli;
 mod runner_and_waves;
+mod spec_schemas;
 mod support;
 mod verification_and_git;

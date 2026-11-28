@@ -1,20 +1,22 @@
 ---
 title: "ADR 0014: Universal Specs in acdd.yaml, Named Items, and Workflows (.acdd/workflows/)"
 doc_type: adr
-status: proposed
+status: accepted
+date: 2026-11-27
 ---
 
 # ADR 0014: Universal Specs in `acdd.yaml`, Named Items, and Workflows (`.acdd/workflows/`)
 
-> [!NOTE]
-> Status: **Proposed**. Not yet admitted; the index in [README](README.md) lists accepted decisions only.
+## Status
+
+Accepted.
 
 ## Context
 
 [ADR 0003](0003-unified-profile-graph-and-state-machine.md) made the gate graph declarative: `GateDef` composes roles, commands, `call` actions, `checks`, `when` predicates, and typed `proof` schemas without knowing what a milestone is. Three things created friction:
 
 - **Spec shape.** `SpecFrontmatter` and `TaskSpecYaml` fix one field set (`acceptance_criteria`, `invariants`, `scope`, `tags`, `subtasks`, …) under `deny_unknown_fields`. `doc_type` is a free string defaulting to `contract`, and consumers branch on `doc_type == "contract"`. The only nested block is `### task: <ref>`.
-- **Repository layout & context transparency.** The docs context lenses in [`docs_domain.rs`](../../src/state_bridge/docs_domain.rs) hardcode `docs/adr`, `docs/**`, `AGENTS.md`, `TESTS.md`, and `tests/**` as literals, and embedded workflows hardcode write scopes such as `docs/**`, `skills/**`, `AGENTS.md`, `README.md`. Relevance ranking for injected docs was also undocumented outside code.
+- **Repository layout & context transparency.** The docs context lenses in [`docs_domain/mod.rs`](../../src/state_bridge/docs_domain/mod.rs) hardcode `docs/adr`, `docs/**`, `AGENTS.md`, `TESTS.md`, and `tests/**` as literals, and embedded workflows hardcode write scopes such as `docs/**`, `skills/**`, `AGENTS.md`, `README.md`. Relevance ranking for injected docs was also undocumented outside code.
 - **Terminology & crate coupling.** Calling gate pipelines `profile` collided with `LanguageProfile`, `SubsystemPreset`, and `cargo --profile`, while `spec.rs` / static roadmap lived inside `acdd-state` unreachable from `acdd-index`. [AR-006](../milestones/archive/AR-006-acdd-spec-crate-and-workflow-cutover.md) extracts `crates/acdd-spec`, renames top-level `profile:` to `preset:` (`index` / `spec` / `state` / `full` / `minimal`), and cuts over `.acdd/workflows/default.yaml`, `workflows_dirs:`, `workflow:`, `--workflow`, `--rebind-workflow`, `--spec`, `SpecConfig`, `WorkflowDef`, and `ACDD_WORKFLOW_SCHEMA_INVALID` before [AC-006](../milestones/AC-006-universal-repository-memory-synthesis.md) lands universal specs on top.
 
 ## Decision
@@ -174,6 +176,10 @@ No hidden magic bridges `specs:` to `paths:`:
 | `acdd.yaml` | `roadmap:` | Workspace CLI roadmap presentation (`badges`, `group_by`, `color`) alongside `response:` |
 | `acdd.yaml` | `workflows_dirs:` | Search directories for custom workflows (default `[".acdd/workflows"]`) |
 | `.acdd/workflows/` | `default.yaml`, `*.yaml` | Execution pipelines (`inherit`, `paths`, `agents`/`roles`, `commands`, `proofs`, `guidance`, `gates`; zero `specs:` or `roadmap:` keys) |
+
+### 10. Repository Memory Tracking and Retrospective Path Alignment
+
+- **Tracked memory specs vs. gitignored retrospectives**: `docs/memories/` is tracked in Git for durable `spec: memory` rule specs (`specs.memories`), while transient milestone telemetry retrospectives live under gitignored `docs/memories/retrospectives/<spec.name>.md` (`.gitignore` narrowed from `/docs/memories/` to `/docs/memories/retrospectives/` in Wave 5, with `.acdd/workflows/default.yaml` `coordinator` / `repo.memory_synthesis` guidance reconciled under `polish` or explicit authorization prior to `handoff` so `handoff` never creates an untracked file directly under tracked `docs/memories/`).
 
 ## Consequences
 

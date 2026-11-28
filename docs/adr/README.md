@@ -15,6 +15,7 @@ Accepted decisions live here as owner-approved ADR files with stable IDs, govern
 4. [ADR 0004: DomainProvider SPI and Plugin Tools](0004-domain-provider-spi-and-plugin-tools.md)
 5. [ADR 0005: Content-Addressed Git Candidate Verification, Commits, and Integration](0005-content-addressed-git-snapshots-and-integration.md)
 6. [ADR 0006: Budgeted Gate Context and Dual-Surface Parity](0006-budgeted-gate-context-and-dual-surface-parity.md)
+14. [ADR 0014: Universal Specs in acdd.yaml, Named Items, and Workflows (.acdd/workflows/)](0014-declarative-spec-schemas-and-items.md)
 
 ## Group II: Indexing, Storage & Concurrency
 
