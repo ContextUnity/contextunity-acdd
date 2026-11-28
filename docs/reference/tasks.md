@@ -78,7 +78,7 @@ State operations map symmetrically across the flat CLI and five state MCP tools 
 | Blackboard | `acdd_blackboard(action: "read \| post")` | `acdd blackboard --action read\|post` | Scoped coordination messages (`draft`, `notes`, `findings`, `blockers`, `decisions`, `deferred`) |
 
 - **Optional `worktree` selector**: supported across all 18 built-in MCP tools and `<domain>_<name>` plugin tools (see [CLI reference](cli.md) and [MCP tools](mcp-tools.md)). Out-of-workflow `roadmap` and `draft` actions are excluded from MCP `acdd_state` and fail closed with redirect hints to CLI `acdd roadmap` and `acdd draft`.
-- **Enforced invariants (`[ENFORCED]`)**: in Tier 6 `ClaimResp.context_lenses`, `docs.invariants` marks invariants backed by `acdd.yaml` `architecture.rules` or `acdd-rule` blocks with `[ENFORCED]`.
+- **Enforced invariants (`[ENFORCED]`)**: in Tier 6 `ClaimResp.context_lenses`, `docs.invariants` marks invariants backed by `.acdd/lint/*.yaml` `rules` or `acdd-rule` blocks with `[ENFORCED]`.
 - **Scoped vs. workspace lint checks**: `code.lint` runs scoped to the task's files on task gates and workspace-wide on root gates, binding `index_generation` and `live_files_digest` into `execution_digest`.
 
 ---
@@ -123,7 +123,9 @@ in full mode, capping the entire `ClaimResp` across Tiers 1–6 and
 1. **Tier 1 (`contract` + `guidance`)**: Mandatory claimed contract (omitting
    empty `invariants` and default `tools` matching `workflow.default_tools`,
    sending the full spec body on `blueprint_synthesis` or taskless specs and
-   `spec_path` on post-task root gates) plus resolved gate guidance (never
+   `spec_path` on post-task root gates, plus budget-projected
+   `contract.attached_specs[]` with `attached_specs_omitted` tracking and
+   optional reclaim when multi-spec runs attach secondary specs) plus resolved gate guidance (never
    truncated; settled at its exact `total_bytes` fixpoint and failing closed with
    `GUIDANCE_BUDGET_EXCEEDED` only when Tier 1 exceeds
    `tier1_cap = limits.max_guidance_bytes.min(response_hard_cap)`, or when
@@ -155,9 +157,9 @@ in full mode, capping the entire `ClaimResp` across Tiers 1–6 and
    `Decisions` and `Blockers` before filling remaining slots with newest `Notes`;
    records omitted counts in `omitted_sections` whenever `shown < relevant_total`.
 6. **Tier 6 (`context_lenses`)**: `DomainProvider` lenses declared in `gate.context`
-   (`docs.instructions`, `docs.adrs`, `docs.invariants`, `code.symbols`, `code.tests`, `code.external_callers`)
+   (`specs.<name>`, `paths.<name>`, `docs.invariants`, `code.symbols`, `code.tests`, `code.external_callers`)
    receive proportional per-lens budgets. Producers compact lens payloads upfront
-   (`docs.instructions` omits heading TOC spam, `code.symbols` filters generated/derive
+   (`paths.instructions` omits heading TOC spam, `code.symbols` filters generated/derive
    methods, `code.tests` deduplicates paths capped at top 8, and `code.external_callers`
    caps at top 5 plus overflow count). Providers and Tier 6 fallback share compact JSON
    accounting for complete and truncated envelopes, including array separators. Bounded 0-1
@@ -196,7 +198,7 @@ authority, and agent writes never conflate:
    (`claim_tree`, `accepted_tree`). Excludes `.git/**`, `.worktrees/**`,
    `is_engine_managed`, configured `state_db` / `code_db` (+ `-wal`, `-shm`,
    `.backup` sidecars), and `.acdd/**` **except** the tracked configuration
-   whitelist (`.acdd/workflows/**`, `.acdd/specs/**`, `.acdd/frameworks/**`).
+   whitelist (`.acdd/workflows/**`, `.acdd/specs/**`, `.acdd/lint/**`, `.acdd/frameworks/**`).
    Tracked assets like `Cargo.lock` and `tests/**/*.jsonl` remain included.
 3. **`is_scope_admitted(rel_path, scope)`**: Brace-aware (`{a,b}`) component-wise
    glob/directory match owned solely by `acdd_core::path_policy` against the
@@ -246,15 +248,15 @@ primary repository root and common Git dir via
   - `traces.lock`: Serializes run trace retention pruning
   - `state.bak.sqlite`: Verified SQLite online-backup snapshot maintained atomically alongside `_sqlite_meta.write_seq` / `last_backup_seq`
 
-### Schema (`v2`: 9 domain tables + `_sqlite_meta`)
+### Schema (`v3`: 9 domain tables + `_sqlite_meta`)
 
 [`crates/acdd-state/src/store/sqlite/schema.rs`](../../crates/acdd-state/src/store/sqlite/schema.rs)
-defines `_sqlite_meta` (`schema_version = 2`, `write_seq`, `last_backup_seq`) plus
+defines `_sqlite_meta` (`schema_version = 3`, `write_seq`, `last_backup_seq`) plus
 9 pure domain tables:
 
 | Table | Purpose |
 | --- | --- |
-| `runs` | Run identity, `spec_id`, resolved `profile_json`, `spec_digest`, `isolation`, `target_base`, `status`, `generation` |
+| `runs` | Run identity, `spec_id`, `attached_specs_json`, resolved `profile_json`, `spec_digest`, `isolation`, `target_base`, `status`, `generation` |
 | `gate_nodes` | Hierarchical nodes (`container`, `root_gate`, `task`, `task_gate`), status, `node_version`, `claim_revision`, `contract_revision`, trees, scopes |
 | `task_dependencies` | Intra-run and cross-run task dependency DAG edges and satisfaction flags |
 | `subtasks` | Subtask status (`pending \| in_progress \| completed \| cancelled`) with mandatory terminal `evidence` CHECK constraint |
@@ -280,4 +282,4 @@ committed archive manifests and tombstones, and verifies SQLite `quick_check`.
 | **`3`** | State, Gate & Scope | `TASK_ALREADY_CLAIMED`, `STALE_CLAIM_REVISION`, `TASK_REVIEW_NOT_INDEPENDENT`, `OUT_OF_SCOPE_CHANGES`, `TASK_SCOPE_CONFLICT`, `TASK_PROOF_UNOBSERVED`, `TASK_CANDIDATE_MISMATCH`, `TASK_NOT_INTEGRATED`, `PRE_TASK_ARTIFACT_STALE`, `DEPENDENT_TASK_COMPLETED`, `DOMAIN_CAPABILITY_UNAVAILABLE`, `MAIN_BRANCH_PROTECTED` |
 | **`4`** | Execution, Git & Storage | `GATE_VERIFICATION_FAILED`, `RUNNER_NO_SUBMISSION`, `GIT_INTEGRATION_CONFLICT`, `EXTERNAL_GIT_DRIFT`, `MUTATING_ACTION_UNCERTAIN_OUTCOME`, `BACKEND_CONFLICT` |
 
-Additional validation diagnostics include `WORKFLOW_VALID` (pass diagnostic from `acdd validate` for resolved `WorkflowDef` documents) and registry-local `FEATURE_REQUIRED_BY_PRESET` text inside `ACDD_WORKFLOW_SCHEMA_INVALID` `message` from `SubsystemRegistry::validate()` ([`subsystems.rs`](../../crates/acdd-core/src/subsystems.rs)), while cross-layer workspace-preset vs. workflow `modules.required` mismatches emit `DOMAIN_CAPABILITY_UNAVAILABLE` ([`validate.rs`](../../crates/acdd-state/src/workflow/validate.rs)). See [configuration](configuration.md#state-storage-and-module-toggles), [CLI reference](cli.md), and [MCP tools](mcp-tools.md) for the exact `StartReq` / `StateInput`, `SyncReq` / `SyncResp`, `DraftReq` / `DraftResp`, `ValidateReq`, and `RoadmapReq` / `RoadmapSpecEntry` field contracts.
+Additional validation diagnostics include `WORKFLOW_VALID` (pass diagnostic from `acdd validate` for resolved `WorkflowDef` documents), structured `AcddError.diag_code` spec diagnostics (`SPEC_FIELD_UNKNOWN`, `SPEC_ITEM_UNKNOWN`, `ITEM_DEPENDENCY_UNKNOWN` on `ACDD_SPEC_SCHEMA_INVALID`), `MEMORY_EVIDENCE_UNKNOWN` (when `memory_synthesis` blackboard evidence IDs fail verification in [`verify.rs`](../../crates/acdd-state/src/usecases/verify.rs)), and registry-local `FEATURE_REQUIRED_BY_PRESET` text inside `ACDD_WORKFLOW_SCHEMA_INVALID` `message` from `SubsystemRegistry::validate()` ([`subsystems.rs`](../../crates/acdd-core/src/subsystems.rs)), while cross-layer workspace-preset vs. workflow `modules.required` mismatches emit `DOMAIN_CAPABILITY_UNAVAILABLE` ([`validate.rs`](../../crates/acdd-state/src/workflow/validate.rs)). See [configuration](configuration.md#state-storage-and-module-toggles), [CLI reference](cli.md), and [MCP tools](mcp-tools.md) for the exact `StartReq` / `StateInput`, `SyncReq` / `SyncResp`, `DraftReq` / `DraftResp`, `ValidateReq`, and `RoadmapReq` / `RoadmapSpecEntry` field contracts.

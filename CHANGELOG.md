@@ -8,6 +8,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Added
 
+- **Universal Specs, External `.acdd/lint/` Rules, Explicit Context Lenses, Multi-Spec Runs, Roadmap Customization & Repository Memory (`AC-006`, [ADR 0014](docs/adr/0014-declarative-spec-schemas-and-items.md))**:
+  - Replaced inline `acdd.yaml` `architecture:` with symmetrical `lint_dirs:` (default `[".acdd/lint"]`) and `specs_dirs:` (default `[".acdd/specs"]`) loaded via one shared confined `<name> | <path>[:<sha256_prefix>]` resolver with deterministic fail-closed merge (zero legacy `architecture:` shim).
+  - Generalized `acdd.yaml` `specs:` to support inline definitions, single-hop `base: contract | memory`, external `ref:` schemas, `SchemaDef` `fields:` and named `items:` (`### <item>: <ref>`), 3-step validation (core shape -> `SchemaDef` -> closed cross-Spec DAG), `roadmap: true | false`, and `spec_deltas` verified by `spec.deltas_applied`.
+  - Extended `acdd start [SPEC ...]` to attach `0..N` input specs (`ClaimResp.contract.attached_specs[]`) with `docs.specs` validating `0..M` output specs, and replaced hardcoded `docs.instructions`/`docs.adrs` paths with explicit `specs.<name>` and workflow `paths.<name>` lenses ranked via 4-tier deterministic relevance (`ADR 0006` + `ADR 0014`).
+  - Added `acdd.yaml` `roadmap:` display config (`color`, `badges`, `group_by`), ANSI CLI rendering (`--color`, `NO_COLOR`), and `acdd roadmap` `--all`, `--tag`, `--field`, and `--group-by` filters.
+  - Added built-in `memory` Spec base (`items.rules`), opt-in single-role `gate_templates.memory_synthesis` (`scope: [specs.memories]`) in `code.yaml` and `documentation.yaml`, `context: [specs.memories]` delivery, and `skills/acdd/references/acdd-spec-examples/`.
 - **`crates/acdd-spec` Extraction & Workspace Dependency SSOT (`AR-006`)**:
   - Consolidated `[workspace.package]` and `[workspace.dependencies]` in root `Cargo.toml` across all workspace crates (`acdd-core`, `acdd-spec`, `acdd-index`, `acdd-state`, `contextunity-acdd`) with zero new third-party dependencies.
   - Extracted `crates/acdd-spec` (`acdd-core` -> `acdd-spec`) owning canonical `split_frontmatter` (sole `acdd-index` entrypoint enforced by `ARCH-INDEX-SPEC-ENTRY`), `SpecDocument`, `draft`, `discovery`, static `deps`, `validate`, static `roadmap/` DAG construction, and the read-only `SpecRuntimeOverlay` trait (`NoopRuntimeOverlay` for stateless callers, SQLite `StateRuntimeOverlay` in `crates/acdd-state`).

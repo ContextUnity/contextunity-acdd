@@ -156,7 +156,7 @@ inherit: code
 gates_patch:
   - id: tasks.build
     context:
-      - docs.adrs
+      - paths.adrs
       - schema.contracts
     checks:
       - code.seam
@@ -179,7 +179,7 @@ gates_patch:
 ## 4. Wiring, Module Toggles, and Fail-Closed Validation
 
 1. **Single-site registration (`src/state_bridge/mod.rs`)**:
-   Add `Arc::new(SchemaDomainProvider)` to the provider vector in [`build_domain_providers`](../../src/state_bridge/mod.rs), passing `config.modules.domains` (merged with `code` and `docs` flags) to `CompositeDomainProvider::with_module_flags`.
+   Built-in providers (`CodeDomainProvider`, `DocsDomainProvider`, and `SpecDomainProvider` for `spec.deltas_applied`) are wired in [`build_domain_providers`](../../src/state_bridge/mod.rs). Add custom providers such as `Arc::new(SchemaDomainProvider)` to the same provider vector, passing `config.modules.domains` (merged with `code`, `docs`, and `spec` flags) to `CompositeDomainProvider::with_module_flags`.
 2. **Workspace toggle (`acdd.yaml`)**:
    External domain providers default to disabled (`false`) in [`SubsystemRegistry::is_domain_enabled`](../../crates/acdd-core/src/subsystems.rs) unless explicitly enabled in `acdd.yaml` (or passed via `with_module_flags`):
    ```yaml

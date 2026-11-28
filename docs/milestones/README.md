@@ -51,7 +51,7 @@ Every milestone document in `docs/milestones/` is a strict `SpecDocument` execut
 ---
 id: AC-008-example-milestone
 title: "Example milestone title"
-doc_type: contract
+spec: contract
 status: planned
 depends_on: []
 owners:

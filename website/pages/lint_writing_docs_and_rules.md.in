@@ -60,20 +60,19 @@ acdd docs check
 ## 2. How to write linter rules
 
 Architectural rules can be declared in **two places**:
-1. Centrally in **`acdd.yaml`** under `architecture.zones` and `architecture.rules`.
+1. Centrally in **`.acdd/lint/*.yaml`** (configured via `lint_dirs:` in `acdd.yaml`) under `zones:` and `rules:`.
 2. Inline inside **non-archive Markdown docs** as fenced **` ```acdd-rule `** YAML blocks — keeping the rule right next to the `INV-*` invariant it enforces.
 
-### Defining zones in `acdd.yaml`
+### Defining zones in `.acdd/lint/zones.yaml`
 
 ```yaml
-architecture:
-  zones:
-    domain:
-      - "src/domain/**"
-    storage:
-      - "src/storage/**"
-    api:
-      - "src/api/**"
+zones:
+  domain:
+    - "src/domain/**"
+  storage:
+    - "src/storage/**"
+  api:
+    - "src/api/**"
 ```
 
 ### The 8 `ArchRuleKind` primitives

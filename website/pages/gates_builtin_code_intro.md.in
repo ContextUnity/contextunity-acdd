@@ -22,7 +22,7 @@ When a worker calls `acdd_claim` / `acdd claim <node_cursor>`, ACDD builds a **6
 ## What the agent receives at each gate
 
 1. **`blueprint_synthesis.synthesize`** (`architect`):
-   - Receives `milestone.synthesis` guidance, `docs.instructions`, `docs.adrs`, `docs.invariants`, and `blackboard` decisions.
+   - Receives `milestone.synthesis` guidance, `paths.instructions`, `paths.adrs`, `docs.invariants`, and `blackboard` decisions.
    - Outputs `proof: blueprint` with per-task slices.
 2. **`blueprint_synthesis.review`** (`independent_reviewer`, `independent_from: [synthesize]`):
    - Audits the blueprint across `claims`, `architecture`, `project_isolation`, and `administration`.

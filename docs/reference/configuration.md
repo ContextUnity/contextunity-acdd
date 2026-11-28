@@ -30,6 +30,10 @@ specs:
     digits: 3
 workflows_dirs:
   - .acdd/workflows
+specs_dirs:
+  - .acdd/specs
+lint_dirs:
+  - .acdd/lint
 state_db: .acdd/state.sqlite
 retain_traces: 20
 ignore:
@@ -54,15 +58,30 @@ linked_workspaces:
 - **Default exclusions**: `.git`, `.acdd`, `target`, `node_modules`, `.venv`, `__pycache__`, `build`, `dist`, `coverage`, `.cache`, `.next`, `.nuxt`, `.svelte-kit`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.gradle`, `.gitignore` rules, and symlinks.
 - **Manifest discovery**: indexes package manifests inside admitted roots plus direct root manifests (e.g. `roots: [src]` still picks up root `Cargo.toml` or `package.json` up to `4 MiB`).
 
-### Specification configurations (`specs:`)
+### Specification configurations (`specs:`, `specs_dirs:`)
 
-`specs:` (`SpecConfig`) defines named folders for Git-tracked Markdown specifications (`milestones` and `plans` by default):
+`specs:` (`SpecConfig`) defines named collections for Git-tracked Markdown specifications (`milestones` and `plans` by default, plus optional `memories` or custom schemas):
 
 - **`path` / `paths`**: normalized relative directory (or confined globs) that must not overlap across configurations.
+- **`base`**: optional single-hop built-in base (`contract` default, or `memory`).
+- **`ref`**: optional external spec schema file resolved from `specs_dirs:` (default `[".acdd/specs"]`) via the shared confined `<name> | <path>[:<sha256_prefix>]` resolver.
+- **`fields` / `items`**: optional `SchemaDef` validation for Spec frontmatter and named `### <item>: <ref>` collections.
 - **`prefixes`**: allowed ID prefixes for files in that configuration (e.g. `[AC]`, `[PLAN]`).
 - **`digits`**: numeric ID zero-padding width (`1..=16`, default `3`, producing `AC-001-...md`).
 - **`workflow`**: optional default `WorkflowDef` name or path applied when starting specs from this configuration (unknown or removed keys fail closed via `#[serde(deny_unknown_fields)]`).
+- **`roadmap`**: boolean (`true` by default on `contract`, `false` on `memory`) controlling default inclusion in `acdd roadmap`.
 - **Discovery**: `acdd draft <spec> <slug>` allocates the next free ID, and `acdd roadmap` scans all configured entries to compute cross-spec dependency waves.
+
+### Roadmap display configuration (`roadmap:`)
+
+Configure CLI `acdd roadmap` presentation defaults alongside `response:`:
+
+```yaml
+roadmap:
+  color: auto            # auto | always | never (honors NO_COLOR)
+  badges: [status, readiness]
+  group_by: wave         # wave | spec | <field>
+```
 
 ### Linked workspaces (`linked_workspaces:`)
 
@@ -78,40 +97,40 @@ Federate sibling repositories into the same code and documentation graph:
 
 Changing workflow, state, or output formatting settings does **not** trigger a cold rebuild of `.acdd/code-map.sqlite`:
 
-- **Rebuilds the code index**: `roots`, `docs`, `ignore`, `sensitive`, `limits`, `linked_workspaces`, `owners`, `aliases`, `architecture`, and `adapter_version`.
-- **Never rebuilds the code index**: `specs` (and its `workflow`, `prefixes`, `digits`), `workflows_dirs`, `state_db`, `retain_traces`, `modules`, `preset`, `response`, and `debug`.
+- **Rebuilds the code index**: `roots`, `docs`, `ignore`, `sensitive`, `limits`, `linked_workspaces`, `owners`, `aliases`, `lint_dirs` (and `.acdd/lint/*.yaml` contents), and `adapter_version`.
+- **Never rebuilds the code index**: `specs` (and its `workflow`, `prefixes`, `digits`, `roadmap`), `specs_dirs`, `workflows_dirs`, `roadmap`, `state_db`, `retain_traces`, `modules`, `preset`, `response`, and `debug`.
 
-### Architectural zones, rules, and complexity limits (`architecture:`)
+### Architectural zones, rules, and complexity limits (`lint_dirs:` & `.acdd/lint/*.yaml`)
 
-Declare workspace-relative glob zones, static `ArchRuleSpec` boundary rules, and `ComplexityLimits` telemetry/invariant rules (`syntax.fact_budget_exceeded`, `syntax.intra_crate_type_homonym`) evaluated by `acdd lint`, `code_map_lint`, and `code.lint` (`#[serde(deny_unknown_fields)]`):
+Architectural zones, static `ArchRuleSpec` boundary rules, `unused_public_api`, and `ComplexityLimits` live in external YAML files under `lint_dirs:` (default `[".acdd/lint"]`, loaded and merged deterministically with fail-closed duplicate-zone/rule/scalar checks; inline `architecture:` in `acdd.yaml` is rejected by strict schema validation):
 
 ```yaml
-architecture:
-  unused_public_api: true
-  complexity:
-    severity: warn
-    invariant: INV-BOUNDED-STRUCTURAL-COMPLEXITY
-  zones:
-    core: ["crates/acdd-core/src/**"]
-    state: ["crates/acdd-state/src/**"]
-  rules:
-    - id: INV-CORE-LEAF
-      invariant: INV-CORE-LEAF
-      severity: error
-      kind: forbid_dependency
-      from: { zones: ["core"] }
-      to: { zones: ["state"], external_symbols: ["rusqlite"] }
-    - id: ARCH-ACYCLIC-CORE
-      severity: error
-      kind: forbid_cycles
-      from: { zones: ["core"] }
-      depth: 2
+# .acdd/lint/architecture.yaml
+unused_public_api: true
+complexity:
+  severity: warn
+  invariant: INV-BOUNDED-STRUCTURAL-COMPLEXITY
+zones:
+  core: ["crates/acdd-core/src/**"]
+  state: ["crates/acdd-state/src/**"]
+rules:
+  - id: INV-CORE-LEAF
+    invariant: INV-CORE-LEAF
+    severity: error
+    kind: forbid_dependency
+    from: { zones: ["core"] }
+    to: { zones: ["state"], external_symbols: ["rusqlite"] }
+  - id: ARCH-ACYCLIC-CORE
+    severity: error
+    kind: forbid_cycles
+    from: { zones: ["core"] }
+    depth: 2
 ```
 
-- **`architecture.unused_public_api`**: defaults to `false` (library-friendly) and enables `dead_tails.unused_public_api` when set to `true` (enabled in this repository's `acdd.yaml`).
-- **`architecture.zones`**: named path-glob sets reusable across `acdd.yaml` rules and fenced `acdd-rule` blocks inside `docs/**` (zone names referenced in docs are validated during indexing and lint).
-- **`architecture.rules`**: list of lint rules (`allow_only_dependencies`, `forbid_dependency`, `single_owner`, `boundary_entry`, `ast_pattern`, `forbid_cycles`, `must_implement`, `doc_integrity`).
-- **`architecture.complexity`**: `ComplexityLimits` (`severity: warn`, optional `invariant: null`). AST `cognitive_complexity` and `max_nesting_depth` are recorded in `node.details` telemetry, while `syntax.fact_budget_exceeded` and `syntax.intra_crate_type_homonym` use `complexity.severity` and bind to `invariant` so `enforced_invariant_ids` marks it `[ENFORCED]`.
+- **`unused_public_api`**: defaults to `false` (library-friendly) and enables `dead_tails.unused_public_api` when set to `true` (enabled in this repository's `.acdd/lint/`).
+- **`zones`**: named path-glob sets reusable across `.acdd/lint/*.yaml` rules and fenced `acdd-rule` blocks inside `docs/**` (zone names referenced in docs are validated during indexing and lint).
+- **`rules`**: list of lint rules (`allow_only_dependencies`, `forbid_dependency`, `single_owner`, `boundary_entry`, `ast_pattern`, `forbid_cycles`, `must_implement`, `doc_integrity`).
+- **`complexity`**: `ComplexityLimits` (`severity: warn`, optional `invariant: null`, optional positive `max_file_prod_lines`, optional positive `max_cognitive_complexity`). AST `cognitive_complexity` and `max_nesting_depth` are recorded in `node.details` telemetry; `syntax.fact_budget_exceeded`, `syntax.intra_crate_type_homonym`, `syntax.file_prod_lines_exceeded` (when `max_file_prod_lines` is set), and `syntax.cognitive_complexity_exceeded` (when `max_cognitive_complexity` is set) use `complexity.severity` and bind to `invariant` so `enforced_invariant_ids` marks it `[ENFORCED]`.
 
 ## Cold-build memory budget
 
@@ -259,7 +278,8 @@ inherit: code
 roles:
   builder:
     models:
-      - gemini-4-hydrogen-high
+      - gemini-4-neon-low
+      - gemini-4-neon-medium
   independent_reviewer:
     mode: subagent
     reuse_on_reject: false
@@ -271,7 +291,7 @@ roles:
 
 ### Repository `.gitignore` and protected paths
 
-Keep committed assets (`.acdd/workflows/**`, `.acdd/specs/**`, `.acdd/frameworks/**`) tracked in Git while ignoring runtime databases and logs (`acdd init` writes this block automatically):
+Keep committed assets (`.acdd/workflows/**`, `.acdd/specs/**`, `.acdd/lint/**`, `.acdd/frameworks/**`) tracked in Git while ignoring runtime databases and logs (`acdd init` writes this block automatically):
 
 ```gitignore
 /.worktrees/
@@ -280,6 +300,8 @@ Keep committed assets (`.acdd/workflows/**`, `.acdd/specs/**`, `.acdd/frameworks
 !/.acdd/workflows/**
 !/.acdd/specs/
 !/.acdd/specs/**
+!/.acdd/lint/
+!/.acdd/lint/**
 !/.acdd/frameworks/
 !/.acdd/frameworks/**
 .acdd/*.sqlite*

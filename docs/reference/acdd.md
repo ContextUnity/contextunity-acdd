@@ -60,7 +60,7 @@ ordered across 6 priority tiers inside a default `<= 10,000`-byte (`10 KiB`) com
    which arrive in Tier 2 `unresolved_findings`), recording omitted counts in
    `omitted_sections` whenever `shown < relevant_total`.
 6. **Tier 6 (`context_lenses`)**: Dynamic `DomainProvider` lenses declared on the
-   gate's `context:` list (e.g., `docs.instructions`, `docs.adrs`, `docs.invariants`,
+   gate's `context:` list (e.g., `specs.memories`, `paths.instructions`, `paths.adrs`, `docs.invariants`,
    `code.symbols`, `code.tests`, `code.external_callers`), compacted upfront at
    the producer and trimmed cleanly by section if needed and reported in `omitted_sections`
    with actionable CLI/MCP inspection hints in Markdown.
@@ -110,10 +110,11 @@ gate uses one primary proof/execution contract:
 - **Domain action / check gate** (`call: <domain>.<action>`, `checks: [<domain>.<check>]`):
   Invokes `DomainProvider` capabilities registered in `src/state_bridge/` (such
   as `code.seam` reachability, `code.lint` architectural/doc lint, and
-  `code.signature_scope` in `src/state_bridge/code_domain/`, or `docs.links` in
-  `src/state_bridge/docs_domain.rs`).
+  `code.signature_scope` in `src/state_bridge/code_domain/`, `docs.links` and
+  `docs.specs` in `src/state_bridge/docs_domain/`, or `spec.deltas_applied` in
+  `SpecDomainProvider` (`src/state_bridge/spec_domain.rs`)).
   (`docs.invariants` stamps `"enforced": true` / `[ENFORCED]` on invariants backed
-  by `acdd-rule`, `acdd.yaml` `architecture.rules`, or `acdd.yaml` `architecture.complexity.invariant`.)
+  by `acdd-rule`, `.acdd/lint/*.yaml` `rules`, or `.acdd/lint/*.yaml` `complexity.invariant`.)
 - **Container gate** (`gates: [...]`): Groups sequential child gates under dotted
   hierarchical cursors (e.g., `blueprint_synthesis.synthesize` -> `blueprint_synthesis.review`).
 - **Task container** (`- tasks: { when?, gates: [...] }`): Expands its child gate
@@ -212,7 +213,7 @@ built-in code-delivery fallback when `.acdd/workflows/default.yaml` is absent) i
 milestone lifecycle (`commands: build_check` and `verify_all` are marked
 `unbound: true`), sets `tags: [default, docs]` (`docs`-tagged tasks skip
 `code.seam`), binds the 18 `default_tools`, attaches `code.seam` and `code.lint` checks and
-`docs.*` / `code.*` context lenses, adds `code.principles` and `code.tools`, and
+`paths.*` / `docs.invariants` / `code.*` context lenses, adds `code.principles` and `code.tools`, and
 automatically strips disabled `code.*` / `docs.*` tools, checks, and lenses when
 `modules.code: false` or `modules.docs: false`. Embedded [`documentation.yaml`](../../crates/acdd-state/src/workflow/embedded/documentation.yaml)
 inherits `base` with `modules: { required: [docs, code] }`, providing a

@@ -57,17 +57,14 @@ response:
   file_uris: false
   max_output_bytes: 65536
 
-# Optional architectural zones, rules, and syntax invariant configuration
-# architecture:
-#   unused_public_api: false
-#   complexity:
-#     severity: warn
-#     invariant: INV-BOUNDED-STRUCTURAL-COMPLEXITY
-#   zones:
-#     core: ["crates/core/src/**"]
-#   rules:
-#     - id: ARCH-ACYCLIC-CORE
-#       severity: error
-#       kind: forbid_cycles
-#       from: { zones: ["core"] }
-#       depth: 2
+# External spec schemas (.acdd/specs/*.yaml) and lint rules (.acdd/lint/*.yaml)
+# specs_dirs:
+#   - .acdd/specs
+# lint_dirs:
+#   - .acdd/lint
+#
+# Optional roadmap display defaults
+# roadmap:
+#   color: auto            # auto | always | never (honors NO_COLOR)
+#   badges: [status, readiness]
+#   group_by: wave         # wave | spec | <field>

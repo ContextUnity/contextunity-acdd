@@ -157,11 +157,11 @@ and inspect diagnostics rather than accepting example YAML on appearance alone.
 
 After indexing, inspect `code_map_overview` for the correct root, roots/coverage,
 languages, and linked workspaces. Run `acdd lint` (or `code_map_lint`) when
-`architecture:` zones/rules or `acdd-rule` blocks are configured, and check a
+`.acdd/lint/*.yaml` zones/rules or `acdd-rule` blocks are configured, and check a
 representative source symbol and documentation page. Review the diff for preserved
 settings, valid links, and scope; run `git diff --check`. Adapt the [ignore example](gitignore.example) so
 runtime state under `.acdd/` and `/.worktrees/` stays excluded while
-`.acdd/workflows/**`, `.acdd/specs/**`, and `.acdd/frameworks/**` remain tracked.
+`.acdd/workflows/**`, `.acdd/specs/**`, `.acdd/lint/**`, and `.acdd/frameworks/**` remain tracked.
 
 Report changed files, observed verification, remaining prerequisites, and the
 proposed next delivery step. Schema and link checks establish artifact validity;

@@ -8,7 +8,7 @@ doc_type: architecture
 ContextUnity ACDD separates problem definition (**Specify / Clarify**), architectural framing (**Design**), and automated proof (**Execution & Verification**), sizing ceremony to the scope of change (**S / M / L**) while keeping low-level component and code diagrams grounded in the live indexed AST graph.
 
 > [!NOTE]
-> Runtime boundaries are documented in the [architecture index](README.md) and [ACDD execution reference](../reference/acdd.md). The `base`, `code`, and `documentation` embedded workflows (plus copyable `audit`, `spec_planning`, and `hotfix` templates in `skills/acdd/references/acdd-workflow-examples/`), blueprint properties `ac_mapping` and `c2_boundary_impact`, optional `spec` and `acceptance_criteria` projection, `crates/acdd-spec` parsing/validation, and unified `crates/acdd-state` `Run` execution support this lifecycle.
+> Runtime boundaries are documented in the [architecture index](README.md), [ACDD execution reference](../reference/acdd.md), and [ADR 0014](../adr/0014-declarative-spec-schemas-and-items.md). Universal `acdd.yaml` `specs:` collections (built-in `contract` and `memory` schemas plus external `.acdd/specs/*.yaml` schemas), `0..N` attached specs per run, `spec_deltas` (`spec.deltas_applied`), external `.acdd/lint/*.yaml` rules, the `base`, `code`, and `documentation` embedded workflows (plus copyable `audit`, `spec_planning`, and `hotfix` templates in `skills/acdd/references/acdd-workflow-examples/`), blueprint properties `ac_mapping` and `c2_boundary_impact`, optional `spec` and `acceptance_criteria` projection, `crates/acdd-spec` parsing/validation, and unified `crates/acdd-state` `Run` execution support this lifecycle.
 
 ## Specify / Clarify before implementation
 
@@ -18,7 +18,7 @@ Ambiguous requirements cause rework faster than syntax bugs. Before choosing cod
 2. **Non-goals**: Adjacent behaviors, integrations, or optimizations explicitly excluded from scope.
 3. **Ambiguities and Acceptance Criteria (`AC-*`)**: Edge cases, failure semantics, security boundaries, and testable numbered assertions (`AC-1`, `AC-2`, ...) against which reviewers and seam tests verify completion.
 
-Product requirements or feature specifications (`docs/specs/*.md` or inline specification blocks in a Plan/Milestone manifest) remain concise behavioral authorities rather than implementation walkthroughs.
+Product requirements, domain specifications, and repository memories (declared under `acdd.yaml` `specs:` — such as `docs/specs/*.md`, `docs/milestones/*.md`, `docs/plans/*.md`, or `docs/memories/*.md` — and optionally attached `0..N` per run or mutated via `spec_deltas`) remain concise behavioral authorities rather than implementation walkthroughs.
 
 ## Design artifacts: SAD, ADRs, and live C4
 

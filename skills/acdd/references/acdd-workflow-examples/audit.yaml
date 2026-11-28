@@ -201,8 +201,8 @@ gates:
       - code.tools
       - hitl.pro
     context:
-      - docs.instructions
-      - docs.adrs
+      - paths.instructions
+      - paths.adrs
       - docs.invariants
       - code.symbols
     save:
@@ -225,8 +225,8 @@ gates:
       - code.tools
       - hitl.pro
     context:
-      - docs.instructions
-      - docs.adrs
+      - paths.instructions
+      - paths.adrs
       - docs.invariants
       - code.symbols
       - code.tests
@@ -256,7 +256,7 @@ gates:
       - code.tools
       - hitl.pro
     context:
-      - docs.instructions
+      - paths.instructions
       - docs.invariants
     save:
       immutable: true

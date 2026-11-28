@@ -92,8 +92,8 @@ to code symbols in the SQLite code map. Follow these structural standards:
    - INV-DOC-FIRST-MATCH-TIER: Candidate resolution returns the first non-empty eligible declaration tier. [`document_symbol_candidates`](../crates/acdd-index/src/linker/resolution/context.rs).
    The identifier remains documentation authority; the code link identifies
    the governed declaration. Pair machine-enforceable architectural invariants
-   with fenced `acdd-rule` YAML blocks (`arch_rules`) referencing `acdd.yaml`
-   `architecture.zones` or path globs, and keep illustrative `INV-*` examples
+   with fenced `acdd-rule` YAML blocks (`arch_rules`) referencing `.acdd/lint/*.yaml`
+   `zones` (loaded via `lint_dirs:`) or path globs, and keep illustrative `INV-*` examples
    inside fenced code blocks (skipped by `docs.rs` `declared_invariants`). Verify
    with `acdd lint` (`code_map_lint`) and `acdd docs check`. See [documentation queries](reference/mcp-tools.md#documentation-queries)
    for the distinction between invariant discovery and verified governance.
@@ -133,7 +133,7 @@ branch merges. Obtain explicit approval for publication.
 ## Shared skill and example maintenance
 
 When modifying architecture, workflows, schemas, CLI commands, or standing Git permissions:
-- Update the repository skill [`skills/acdd/SKILL.md`](../skills/acdd/SKILL.md) and reference examples under [`skills/acdd/references/`](../skills/acdd/references/) (`acdd_workflow.yaml.example`, `workflow-reference.md`, `agents.md.example`, `acdd.yaml.example`, `gitignore.example`) to match active system behavior and schemas.
+- Update the repository skill [`skills/acdd/SKILL.md`](../skills/acdd/SKILL.md) and reference examples under [`skills/acdd/references/`](../skills/acdd/references/) (`workflow-reference.md`, `agents.md.example`, `acdd.yaml.example`, `spec_manifest.md.example`, `gitignore.example`) to match active system behavior and schemas.
 - Ensure all example configurations parse cleanly and adhere to strict validation invariants (e.g. `deny_unknown_fields`, valid `guidance` keys, and accurate model specs).
 - Do not write to external agent directories (`~/.agents/`) directly during task execution; external installation and distribution is handled via installer workflows and dedicated distribution commands.
 
@@ -142,7 +142,10 @@ When modifying architecture, workflows, schemas, CLI commands, or standing Git p
 When changing user-facing CLI/MCP surfaces, workflows, presets, configuration,
 architecture, or reference docs, update `website/` (`website/pages/`,
 `website/templates/`, `website/sync-docs.py`) in the same documentation scope.
-Verify `./website/build.sh --check` (`sync-docs.py && zola build && zola check`)
+Run `rg -n` for removed/renamed config keys, lens names, and workflow identifiers
+across `README.md`, `AGENTS.md`, `docs/adr/`, `docs/milestones/AGENTS.md`, and
+`website/pages/*.md.in` (`sync-docs.py` does not rewrite surrounding `.md.in`
+prose). Verify `./website/build.sh --check` (`sync-docs.py && zola build && zola check`)
 passes with zero errors and zero orphaned pages before submitting documentation
 updates or completing a pre-handoff documentation scan.
 

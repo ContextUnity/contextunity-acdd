@@ -154,7 +154,7 @@ Each key under `commands:` accepts one of four forms (or `null` to clear an inhe
 | `contours` | Review gate | List of `contours:` keys audited by `independent_reviewer`. |
 | `scope` | Explicit gate | List of workspace-relative globs (e.g. `polish` admitting `docs/**`, `README.md`). |
 
-- **Available `context:` lenses**: `docs.instructions`, `docs.adrs`, `docs.invariants`, `docs.workspace_config`, `code.symbols`, `code.tests`, `code.external_callers`.
+- **Available `context:` lenses**: `paths.instructions`, `paths.adrs`, `paths.<name>`, `specs.<collection>`, `docs.invariants`, `docs.workspace_config`, `code.symbols`, `code.tests`, `code.external_callers`.
 
 ### 5.3 Proofs, dependencies & persistence
 

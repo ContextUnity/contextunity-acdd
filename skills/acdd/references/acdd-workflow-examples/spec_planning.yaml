@@ -102,7 +102,7 @@ guidance:
   code.tools:
     description: "MANDATORY ACDD GRAPH & CONFIG DISCOVERY PROTOCOL"
     criteria:
-      - "Inspect `context_lenses[\"docs.workspace_config\"]` (and `acdd.yaml`) first to honor configured `specs.<spec>` paths, `prefixes`, `digits`, `workflow`, `docs` roots, `workflows_dirs`, `architecture.zones`, and `limits.max_metadata_bytes`."
+      - "Inspect `context_lenses[\"docs.workspace_config\"]` (and `acdd.yaml`) first to honor configured `specs.<spec>` paths, `prefixes`, `digits`, `workflow`, `docs` roots, `workflows_dirs`, `.acdd/lint/*.yaml` zones (`architecture_zones`), and `limits.max_metadata_bytes`."
       - "Use CLI `acdd draft <spec> <slug> [--prefix <TAG>]` to allocate collision-free sequential IDs across active and `archive/` directories rather than guessing numbers."
       - "Ground every cited symbol, owner, and seam via `code_map_overview`, `code_map_search(detail: \"compact\")`, `code_map_inspect`, `code_map_impact`, and `acdd_read(selector: ...)`; ground ADRs and `INV-*` rules via `search_docs`/`get_doc`."
   plan.principles:
@@ -128,7 +128,7 @@ contours:
   architecture:
     description: "Verify Occam's razor simplicity, canonical owner reuse (INV-SINGLE-OWNER), ADR/invariant alignment, and layer isolation."
     criteria:
-      - "Confirm zero speculative abstractions, shadow helpers, or upward/cross-layer leaks against acdd.yaml architecture.zones and ADRs."
+      - "Confirm zero speculative abstractions, shadow helpers, or upward/cross-layer leaks against .acdd/lint/*.yaml zones and ADRs."
   waves_and_scopes:
     description: "Verify acdd.yaml spec rules, acyclic task dependencies, disjoint concurrent write scopes, and proportional seam proofs."
     criteria:
@@ -154,8 +154,8 @@ gates:
       - hitl.pro
     context:
       - docs.workspace_config
-      - docs.instructions
-      - docs.adrs
+      - paths.instructions
+      - paths.adrs
       - docs.invariants
     max_attempts: 3
     pass: review
@@ -182,8 +182,8 @@ gates:
       - hitl.pro
     context:
       - docs.workspace_config
-      - docs.instructions
-      - docs.adrs
+      - paths.instructions
+      - paths.adrs
       - docs.invariants
     save:
       immutable: true

@@ -14,8 +14,8 @@ commands:
   build_check: *build_check_cmd
 
   polish_check:
-    command: "cargo test --test commitment_integrity && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo run -q -- docs check && cargo run -q -- validate"
-    description: "Run fast compilation, strict Clippy, commitment_integrity, and docs/spec validation on polish before run_tests runs full Linux + macOS suites."
+    command: "cargo test --test commitment_integrity && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo run -q -- docs check && cargo run -q -- validate && ./website/build.sh --check"
+    description: "Run fast compilation, strict Clippy, commitment_integrity, docs/spec validation, and website sync/build check on polish before run_tests runs full Linux + macOS suites."
     timeout_seconds: 600
 
   check_full_repo: &verify_all_cmd
@@ -54,19 +54,21 @@ roles:
       - gemini-4-hydrogen-xhigh
   builder:
     models:
-      - gemini-4-hydrogen-high
+      - gemini-4-neon-low
+      - gemini-4-neon-medium
   independent_reviewer:
     models:
-      - gemini-4-neon-high
       - gemini-4-neon-xhigh
+      - gemini-4-neon-high
   integration_reviewer:
     mode: subagent
     models:
+      - gemini-4-neon-xhigh
       - gpt-6.2-sol
   coordinator:
     mode: inline
     reuse_on_reject: true
-    guidance: "Execute inline as the main coordinator agent: synthesize milestone telemetry, cycle history, code quality assessment, and rule updates into gitignored docs/memories/<spec.name>.md before submitting handoff."
+    guidance: "Execute inline as the main coordinator agent: synthesize milestone telemetry, cycle history, code quality assessment, and rule updates into gitignored docs/memories/retrospectives/<spec.name>.md before submitting handoff."
 
 guidance:
   repo.rust:
@@ -75,7 +77,9 @@ guidance:
       - "Model finite variants with closed `enum`s, validated newtypes, `From`/`TryFrom`, `&dyn Trait`, and non-generic inner fns (no mirror `Mcp*` structs or magic strings)."
       - "Borrow `&str`/`&Path`/`Cow<'_, str>` and intern repeated symbols (`Arc<str>`, `CompactTag`); hash via `acdd_core::format::sha256_serde_json` and bind codecs with `struct_codecs!`."
       - "Batch Git/SQLite/spec reads (`git cat-file --batch`, single `ls-tree`, preloaded `BTreeMap`); prove `Ok(None) => slow_path` non-fallbacks and benchmark CLI hot paths (`index`, `query`, `roadmap`, `validate`) on `--release`."
-      - "STOP before adding language-name checks in universal `linker/{value_flow,resolution,semantic_context}/` or `db/lint/` modules or writing a parallel parser/lexer when upstream extractor/manifest metadata is missing: extend the language extractor/profile instead or escalate."
+      - "Run workspace-wide `code_map_impact`/`ast_grep_search` across `archive`/`sync`/`restore`/examples/docs before editing; check adjacent crates/formatters for semantic duplicates and reuse populated DTO fields; split >600-800 LOC files into directory modules; guard UTF-8 slicing (`is_char_boundary`) and fail closed on empty scopes."
+      - "STOP before adding language-name checks in universal `linker/{value_flow,resolution,semantic_context}/` or `db/lint/` modules or writing a parallel walker/parser/lexer when upstream extractor/manifest metadata is missing: extend the canonical owner instead or escalate."
+      - "Route every Spec consumer (`roadmap`, `draft`, `archive`, `verify`, `docs_domain`, `spec_domain`, `docs_lint`) through ONE `acdd-spec` resolver and test all 3 precedence cases (path-inferred, matching `spec:`, cross-directory `spec:` override)."
   repo.tests:
     description: "REPOSITORY TEST BUDGETS"
     criteria:
@@ -88,7 +92,7 @@ guidance:
     criteria:
       - "Before submitting `handoff`, analyze the full milestone run using `acdd_state(action: \"show\")` (or `acdd show <run>`), `.acdd/state.sqlite` read-only data (`runs`, `gate_nodes`, `gate_claims`, `gate_traces`, `gate_artifacts`, `blackboard`), `git log --stat <target_base_commit>..HEAD`, and session/subagent usage logs."
       - "Compile per-task and run-wide statistics: elapsed wall time (run/claim/trace timestamps), token usage per worker/task (when exposed by the harness, or `N/A` when unavailable), loop/cycle counts (`attempt`, `cycle_count`, `build <-> review` rounds, `rearchitect` drift), trace pass/fail counts, scope extensions, and blackboard decisions/deferred counts."
-      - "Write the structured retrospective to `docs/memories/<spec.name>.md` (spec ID/file stem, or `<run_name>.md` for ephemeral `--goal` runs; `/docs/memories/` is gitignored so writing it preserves `claim_tree` with zero extra commits) covering: (1) telemetry table, (2) what went well, (3) what went wrong / friction & bottlenecks, (4) code quality assessment (architecture, SSOT/types, clones/dead_tails, hot-path & test quality), and (5) concrete rule/profile update recommendations (`AGENTS.md`, crate `AGENTS.md`, `skills/`, `.acdd/workflows/default.yaml`, `code.yaml`)."
+      - "Write the structured retrospective to `docs/memories/retrospectives/<spec.name>.md` (spec ID/file stem, or `<run_name>.md` for ephemeral `--goal` runs; `/docs/memories/retrospectives/` is gitignored so writing it preserves `claim_tree` with zero extra commits) covering: (1) telemetry table, (2) what went well, (3) what went wrong / friction & bottlenecks, (4) code quality assessment (architecture, SSOT/types, clones/dead_tails, hot-path & test quality), and (5) concrete rule/profile update recommendations (`AGENTS.md`, crate `AGENTS.md`, `skills/`, `.acdd/workflows/default.yaml`, `code.yaml`)."
 
 gates_patch:
   - id: tasks.build
@@ -124,6 +128,8 @@ gates_patch:
     guidance: [milestone.review, core.review, code.principles, code.tools, repo.rust, repo.tests, hitl.pro]
   - id: polish
     command: polish_check
+    checks:
+      - check: docs.specs
     guidance: [milestone.polish, core.execution, code.principles, code.tools, repo.rust, repo.tests, hitl.pro]
   - id: handoff
     role: coordinator

@@ -15,7 +15,7 @@ This document defines the `SpecDocument` authoring format and lifecycle governan
 ---
 id: <TAG>-<NNN>-<slug>
 title: "Human-readable milestone title"
-doc_type: contract
+spec: contract
 status: planned
 depends_on:
   - <upstream-milestone-id>
@@ -39,7 +39,7 @@ linked_to: []
 ### Frontmatter Invariants
 
 1. **`id`**: Must match `<TAG>-<NNN>-<slug>` conforming to the Domain Taxonomy (`AC`, `LS`, `PF`, `AR`, `UX`, `IN`) or numeric legacy format.
-2. **`doc_type: contract`**: Milestones are execution contracts (`doc_type: plan` is used for in-place plans under `docs/plans/`).
+2. **`spec: contract`** (per [ADR 0014](../adr/0014-declarative-spec-schemas-and-items.md)): Milestones are execution contracts (defaults to `contract` when omitted under `specs.milestones`; `spec: memory` or custom collections override the owning directory).
 3. **`workflow`**: Optional workflow selector (`base | code | documentation | <path>`). When omitted, spec defaults apply (`specs.milestones.workflow` -> `code`).
 4. **`status`**: One of `planned`, `active`, `completed`, or `cancelled` (cancelled manifests require a non-empty `cancellation_reason`).
 5. **`guidance: { slot: tier }`**: Binds parameterized guidance slots (`hitl.pro`, etc.).

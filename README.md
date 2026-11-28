@@ -73,7 +73,7 @@ acdd start docs/milestones/AC-001-jwt-rotation.md --worktree
 
 ## Architectural & Graph Linter
 
-`acdd lint` (MCP: `code_map_lint`, gate check: `code.lint`) evaluates rules from `acdd.yaml` (`architecture: { zones, rules }`) and executable fenced `acdd-rule` blocks inside Markdown documentation in one pass over `.acdd/code-map.sqlite`:
+`acdd lint` (MCP: `code_map_lint`, gate check: `code.lint`) evaluates rules from `.acdd/lint/*.yaml` (configured via `lint_dirs:` in `acdd.yaml`) and executable fenced `acdd-rule` blocks inside Markdown documentation in one pass over `.acdd/code-map.sqlite`:
 
 | Category | Scope | What It Enforces |
 | --- | --- | --- |

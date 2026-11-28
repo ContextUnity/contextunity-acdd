@@ -16,7 +16,7 @@ gates_patch:
       - code.tools
       - hitl.pro
     context:
-      - docs.instructions
+      - paths.instructions
       - docs.invariants
       - code.symbols
 

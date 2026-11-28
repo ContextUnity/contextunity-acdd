@@ -14,8 +14,11 @@ and ordered verification gates with `pass` / `fail` routing edges.
 Workflows use strict schema validation (`deny_unknown_fields`). Legacy or
 non-`version: 2` workflows (or those using removed `loop:`, `*_proof` wrappers,
 `proof: contract` / `seam_test` / `delivery`, `expected_failure`,
-`git.commit_mode`, `git.integrate`, `git_commit_notes`, or regex `output:`
-scrapers) fail closed with `ACDD_WORKFLOW_SCHEMA_INVALID`.
+`git.commit_mode`, `git.integrate`, `git_commit_notes`, regex `output:`
+scrapers, top-level `specs:` / `roadmap:` keys that belong in `acdd.yaml`, or
+legacy `docs.instructions` / `docs.adrs` context lenses — which emit migration
+hints to `paths.instructions` / `paths.adrs`) fail closed with
+`ACDD_WORKFLOW_SCHEMA_INVALID`.
 
 > [!NOTE]
 > Contract and command passes require claim-bound execution observations via
@@ -46,7 +49,7 @@ ACDD resolves the active workflow reference (`--workflow`, `ACDD_WORKFLOW`, spec
      `code_map_lint`), additional contours (`architecture`, `concurrency`,
      `project_isolation`), 4-layer clean guidance (`milestone.*` / `task.*`,
      `core.*`, `code.principles`, `code.tools`, `hitl.pro`), `code.seam` +
-     `code.lint` checks, `docs.*` / `code.*` context lenses, and automatic
+     `code.lint` checks, `paths.*` / `docs.invariants` / `code.*` context lenses, and automatic
      stripping of disabled `code.*` / `docs.*` hooks when `modules.code: false`
      or `modules.docs: false`.
    - `documentation` ([`documentation.yaml`](../../crates/acdd-state/src/workflow/embedded/documentation.yaml)):
@@ -87,6 +90,7 @@ git:
   worktrees: manual            # manual | managed
 save: commit                   # Default post save action (none | commit)
 tags: [default, docs]
+paths: {}                      # Named non-spec path globs (e.g. instructions, adrs, docs) exposed as paths.<name>
 protected_paths: []
 default_tools: [acdd_read, acdd_guide, acdd_state, acdd_claim, acdd_verify, acdd_submit, acdd_blackboard]
 modules: {}                    # Optional SubsystemRegistryPatch
@@ -109,9 +113,10 @@ gates_patch: []                # Patch inherited gates by id/cursor/after/before
 - `inherit: none` (or omitted): Compiles a standalone workflow from scratch with no
   inherited roles, commands, proofs, guidance, contours, or gates.
 - `inherit: base | code | documentation | <path>[:<sha256_prefix>]`:
-  - `roles`, `commands`, `scope_args_by_pattern`, `proofs`, `guidance`, `contours`,
-    `gate_templates`, `limits`, and `modules` merge field-wise / by key
-    (supporting `PatchField` null-clearing on nullable fields).
+  - `paths`, `roles`, `commands`, `scope_args_by_pattern`, `proofs`, `guidance`,
+    `contours`, `gate_templates`, `limits`, and `modules` merge field-wise / by key
+    (supporting `PatchField` null-clearing on nullable fields; `base.yaml`
+    provides default `paths` entries for `docs`, `adrs`, and `instructions`).
   - `tags` and `protected_paths` extend or patch inherited sets. When inheriting
     `code`, retain `docs` in `tags:` if `when: "!docs"` gates are used downstream.
   - **`gates:` (replace)**: Replaces the parent's `gates:` list completely when
@@ -222,9 +227,34 @@ Built-in `ProofKind` values are:
 ### `DomainProvider` Extensions (`call`, `checks`, `context`, `tools_add`, `tools_remove`)
 Domain-agnostic `acdd-state` delegates domain behavior via `DomainProvider` (`crates/acdd-core/src/ports.rs`; see the [domain extensions guide](../architecture/domain-extensions.md)):
 - **`call: <domain>.<action>`** (`with: { ... }`): Executes a registered domain action (with `lookup_action_result` recovery for mutating actions).
-- **`checks: [<domain>.<check>]`** (or `{ check, with? }`): Automated domain verifiers executed during `acdd verify` / `acdd_verify` (e.g., `code.seam`, `code.lint` supporting `with: { categories: [arch, syntax, docs, duplicates, dead_tails, cycles] }` and failing when `summary.errors > 0`, `code.signature_scope`, `docs.links`); `acdd submit` / `acdd_submit` re-validates live freshness against the recorded trace digest without re-running checks.
-- **`context: [<domain>.<lens>]`**: Domain context lenses assembled into `ClaimResp` tiers (`docs.instructions`, `docs.adrs`, `docs.invariants`, `code.symbols`, `code.tests`, `code.external_callers`).
+- **`checks: [<domain>.<check>]`** (or `{ check, with? }`): Automated domain verifiers executed during `acdd verify` / `acdd_verify` (e.g., `code.seam`, `code.lint` supporting `with: { categories: [arch, syntax, docs, duplicates, dead_tails, cycles] }` and failing when `summary.errors > 0`, `code.signature_scope`, `docs.links`, `docs.specs`, `spec.deltas_applied`); `acdd submit` / `acdd_submit` re-validates live freshness against the recorded trace digest without re-running checks.
+- **`context: [<domain>.<lens>]`**: Explicit domain context lenses assembled into `ClaimResp` Tier 6 (see the complete table below).
 - **`tools` / `tools_add` / `tools_remove`**: Per-gate MCP tool allowlists layered over `default_tools` (including built-in tools and `<domain>_<name>` plugin tools).
+
+### Context Lenses (`specs.*`, `paths.*`, `docs.*`, `code.*`) & 4-Tier Relevance Ranking
+
+Every gate declares its exact context lenses in `context:` (`WorkflowDef.paths:` binds non-spec workspace directories/globs, while `acdd.yaml` `specs:` binds Spec collections):
+
+| Lens | Owner / Source | What It Injects into `ClaimResp.context_lenses` |
+|---|---|---|
+| `specs.<name>` | `acdd.yaml` `specs.<name>` (`DocsDomainProvider`) | Specs and items from the configured Spec collection (e.g. `specs.memories`, `specs.plans`), ranked via the 4-tier relevance policy below and packed into the Tier 6 byte budget. |
+| `paths.<name>` | `WorkflowDef.paths.<name>` (`DocsDomainProvider`) | Non-spec workspace files/directories declared in the workflow `paths:` map (e.g. `paths.instructions`, `paths.adrs`), ranked via the 4-tier relevance policy below. |
+| `docs.invariants` | `DocsDomainProvider` | Non-archive `INV-*` invariants governing symbols or paths in `admitted_scope`, marking lint-backed rules with `[ENFORCED]`. |
+| `docs.workspace_config` | `DocsDomainProvider` | Summary of active workspace config: `specs`, `docs_roots`, `workflows_dirs`, `available_workflows`, `architecture_zones`, `limits.max_metadata_bytes`, and `modules`. |
+| `code.symbols` | `CodeDomainProvider` | Indexed production symbols inside `admitted_scope` (filtering derived/generated methods). |
+| `code.tests` | `CodeDomainProvider` | Deduplicated covering test paths for `admitted_scope` symbols (capped at top 8). |
+| `code.external_callers` | `CodeDomainProvider` | Inbound callers and SQL table consumers outside `admitted_scope` (capped at top 5 plus overflow count). |
+
+**4-Tier Deterministic Relevance Ranking** ([ADR 0006](../adr/0006-budgeted-gate-context-and-dual-surface-parity.md), [ADR 0014](../adr/0014-declarative-spec-schemas-and-items.md)):
+`specs.<name>` and `paths.<name>` lenses rank candidate items/documents deterministically before bounded 0-1 knapsack / `max_bytes` packing (`pack_knapsack_indices`):
+1. **Direct ID/title citation** in the current task `target` or owning Spec body (highest priority).
+2. **Explicit `scope` / `owners` overlap** (`scopes_overlap` between item `scope` / spec `owners` and task `admitted_scope`).
+3. **Indexed `code-map.sqlite` doc edges** (`documents`, `references_doc`, `cites_doc`, `governs`, `governed_by` linking the document to any path or symbol in `admitted_scope`).
+4. **Global fallback rules** (`scope: ["**"]` or unlinked repo-wide documents — lowest priority, dropped first under budget pressure).
+
+### Repository Memory & `memory_synthesis` Gate Template
+
+Built-in `code.yaml` and `documentation.yaml` ship an opt-in `gate_templates.memory_synthesis` single-role gate template (`use: memory_synthesis`, `scope: [specs.memories]`) that synthesizes durable lessons from run blackboard notes/findings/decisions into `spec: memory` documents under `specs.memories` (e.g. `docs/memories/`). Downstream gates receive relevant memory rules automatically via `context: [specs.memories]` ranked by the 4-tier policy above.
 
 ---
 

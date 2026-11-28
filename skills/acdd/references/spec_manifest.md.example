@@ -1,7 +1,7 @@
 ---
 id: AC-010
 title: "Checkout Order Summary & Tax Guard"
-doc_type: contract
+spec: contract
 status: active
 depends_on:
   - AC-009

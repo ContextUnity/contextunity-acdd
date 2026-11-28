@@ -47,7 +47,7 @@ consumer stays unprotected.
 ## 3. Verify Reachability & Graph Hygiene Structurally
 
 1. Search the canonical owner and enumerate all syntactic variants (constructors,
-   methods, adapters, composition roots, CLI/MCP entrypoints) with validated
+   methods, adapters, composition roots, entrypoints) with validated
    structural/AST queries rather than ad-hoc string assumptions.
 2. Check blast radius (`impact`) across callers before editing, and treat stale
    or empty index coverage as a missing-evidence gap until refreshed.
@@ -68,6 +68,10 @@ Check adjacent boundary dimensions for every touched owner:
 - transactions, crash/restart recovery, cleanup failure preservation (never
   discarding primary errors or converting partial failure into success);
 - filesystem confinement, symlinks, cross-device/shared-VCS paths, and TOCTOU;
+- isolation, cache, and visibility seams: sweep **all** equivalent aggregation
+  points, fallbacks, cache keys (including active config, schema, or scope
+  discriminators), and derived views behind one canonical owner instead of
+  patching only the reported consumer;
 - concurrency, revision/CAS fencing, and authorization changes;
 - released vs uncommitted formats (squash unshipped dev schemas instead of adding
   legacy shims).
@@ -97,9 +101,12 @@ Before submitting a fix or scheduling repeat review:
    (`confirmed-fixed`, `dismissed-with-evidence`, `duplicate-of`,
    `plan-deferred-with-guard`, or `unresolved`).
 2. Re-run structural residual scans, `duplicates`/`dead_tails`, diff impact, one
-   deliberate mutation check per invariant, and all repository verification
-   commands on a clean, committed state (`dirty`/partial runs keep closure open).
-3. **Hard stop on recurring clinics**: If a follow-up round mostly uncovers
-   `incomplete-remediation` on the same owners, or lacks index coverage or
-   mutation proof, stop patching incrementally—report the open clusters and
-   missing seam evidence cleanly for an architectural decision.
+   deliberate mutation check per invariant, a **live end-to-end smoke check**
+   through the real entrypoint against live runtime state or a stateful fixture
+   reproducing the reported path, and all repository verification commands on a
+   clean, committed state (`dirty`/partial runs keep closure open).
+3. **Hard stop on recurring clinics**: On repeated (`>= 2`) multi-boundary
+   rejections, or if a follow-up round mostly uncovers `incomplete-remediation`
+   on the same owners or lacks index coverage or mutation proof, stop patching
+   incrementally—escalate for an architectural or capacity decision and report
+   the open clusters and missing seam evidence cleanly.

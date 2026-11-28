@@ -48,7 +48,7 @@ acdd -C .worktrees/<run_name> status
 acdd -C .worktrees/<run_name> claim <node_cursor> --worker <worker_id>
 acdd -C .worktrees/<run_name> submit <node_cursor> --action pass --worker <worker_id>
 
-# Run arbitrary build/test/git commands inside the active run or worker worktree:
+# Run arbitrary build/test/git commands inside the active run or worker worktree (MUST omit -C):
 acdd exec [--run <id|name>] [--worker <worker_id>] -- <program> [args...]
 ```
 
@@ -64,7 +64,8 @@ Investigate codebases and documentation using ACDD's structural graph and docs t
 2. **Trace relationships, callers & blast radius (`code_map_inspect`, `code_map_explain`, `code_map_impact`)**:
    - Call `code_map_inspect` for one declaration's summary, up to 5 direct callers/callees, linked docs, and governing `INV-*` invariants (pass `show_source: true` only when source is missing from previews).
    - Call `code_map_explain` for full paged `incoming`/`outgoing` edges of every kind (`calls`, `imports`, `implements`, `inherits`, `mutates`, `queries_table`, ...).
-   - Call `code_map_impact` (`depth: 1`, `direction: "inbound" | "outbound"`, or `changes: "staged" | "unstaged" | "head"`) before modifying or removing interfaces. `code_map_query(operation="prove_removal")` checks static incoming dependencies (`possible_calls` included) without substituting for runtime tests.
+   - Call `code_map_impact` (`depth: 1`, `direction: "inbound" | "outbound"`, or `changes: "staged" | "unstaged" | "head"`) and `ast_grep_search` across `archive`/`sync`/`restore`/examples/sibling docs before modifying or removing interfaces. `code_map_query(operation="prove_removal")` checks static incoming dependencies (`possible_calls` included) without substituting for runtime tests.
+   - Check adjacent crates/formatters (`crates/*` vs `src/format/`, `acdd-core/path_policy.rs`) for semantic duplicates before adding local grouping/matching/walk helpers, inspect already-populated DTO/domain fields before re-deriving data downstream, split production files into directory modules once approaching ~600-800 LOC instead of piling onto monoliths, and guard byte-index slicing with UTF-8 `is_char_boundary` plus empty-scope fail-closed checks.
    - Call `code_map_query(operation="tests")` to traverse verified `calls` paths from `test_case` nodes (`possible_calls` and lexical suggestions remain hints, not verified coverage).
    - *(Unified aliases: `symbol` aliases `selector` and `file_path` aliases `path` across `inspect`, `explain`, `impact`, `query`, and `acdd_read`.)*
 3. **Discover & read documentation (`search_docs`, `get_doc`)**:
@@ -83,12 +84,12 @@ Investigate codebases and documentation using ACDD's structural graph and docs t
   `path`/`target` on integration reviews), and `code_map_lint` (`acdd lint`; defaults to
   `[arch, syntax, docs]`, or `categories: ["arch","duplicates","dead_tails","cycles","syntax","docs"]` / `--categories all`). `syntax` checks stored parser diagnostics (`syntax.parse`), `fact_budget_exceeded`, and `intra_crate_type_homonym` (using `complexity.severity`, while AST `cognitive_complexity` and `max_nesting_depth` are recorded in `node.details` telemetry); `cycles` isolates multi-node non-test/non-archive module `imports` SCCs (enforceable at `error` via `forbid_cycles`); `dead_tails` computes workspace-wide
   production liveness first, then reports `phantom_tested`, `dead_tails` (`unreachable`),
-  `dangling_calls` (`crate::*`/`super::*`/`self::*`), and—when `architecture.unused_public_api: true` is configured—`dead_tails.unused_public_api`
+  `dangling_calls` (`crate::*`/`super::*`/`self::*`), and—when `.acdd/lint/*.yaml` `unused_public_api: true` is configured—`dead_tails.unused_public_api`
   (`error` on unused/test-only `pub use` re-exports and `pub` items lacking non-test
   cross-module production callers). Eliminate or reject new
   clones, phantom-tested dead code, dead tails, dangling calls, unused public compatibility APIs, module import cycles, and `acdd-rule` / doc-integrity lint errors.
 - **Executable `acdd-rule` blocks & `ComplexityLimits`**: Pair machine-enforceable `INV-*` invariants in
-  docs with fenced `acdd-rule` YAML blocks (or `acdd.yaml` `architecture.{zones,rules,complexity}`)
+  docs with fenced `acdd-rule` YAML blocks (or `.acdd/lint/*.yaml` `zones`/`rules`/`complexity`)
   so `code_map_lint` / `code.lint` enforces boundaries and `docs.invariants` surfaces `[ENFORCED]`.
 - **SQL & bounds**: Supply one alias per parameter (`sql` or `query` for read-only
   `SELECT`/`WITH` joins over `path_dictionary` and `node_hash`; see
@@ -99,21 +100,21 @@ Investigate codebases and documentation using ACDD's structural graph and docs t
 ## ACDD workflows and task operations
 
 Embedded workflows (`base`, `code`, `documentation`) or repository `.acdd/workflows/default.yaml`
-and `.acdd/workflows/<name>.yaml` overlays (`version: 2`, validated via `acdd validate`, plus ready-to-copy `audit`, `spec_planning`, and `hotfix` templates in `references/acdd-workflow-examples/`) govern gates,
+and `.acdd/workflows/<name>.yaml` overlays (`version: 2`, validated via `acdd validate`, plus ready-to-copy `audit`, `spec_planning`, and `hotfix` templates in `references/acdd-workflow-examples/` and spec schema templates in `references/acdd-spec-examples/`) govern gates,
 proof schemas, contours, isolation (`--in-place` overrides to `git.isolation: in_place`, `save: none`,
 preserving `save.immutable: true`), and `save.report` (written strictly under
 `.acdd/reports/*.{md,json}` on pass). Do not assume a hardcoded gate sequence:
 
 | Workflow (`--workflow` / `inherit`) | Purpose & Gate Flow | Typical Launch Command |
 |---|---|---|
-| `code` (default) | Full software lifecycle (`blueprint_synthesis` -> `tasks` -> `run_tests` -> `polish` -> `integration_review` -> `handoff`) | `acdd start <spec_path>` or `acdd start --goal "..."` |
+| `code` (default) | Full software lifecycle (`blueprint_synthesis` -> `tasks` -> `run_tests` -> `polish` -> `integration_review` -> `handoff`) | `acdd start [<spec_path> ...]` or `acdd start --goal "..."` |
 | `base` | Minimal worktree-isolated baseline (`gates: []`, `save: commit`) for custom non-code overlays | `acdd start --goal "..." --workflow base` |
-| `documentation` | Compiler-free living docs & `acdd-rule` invariant lifecycle gated on `docs.links` + `code.lint` (`[arch, docs]`) | `acdd start <spec_path> --workflow documentation` or `acdd start --goal "..." --workflow documentation` |
+| `documentation` | Compiler-free living docs & `acdd-rule` invariant lifecycle gated on `docs.links` + `code.lint` (`[arch, docs]`) | `acdd start [<spec_path> ...] --workflow documentation` or `acdd start --goal "..." --workflow documentation` |
 | `audit` (template) | Read-only `in_place` (`save: none`) review/SAST/hygiene (`recon -> analyze -> triage`) writing `.acdd/reports/{run_name}.md` | `acdd start --goal "..." --workflow audit` (or path to template) |
 | `spec_planning` (template) | Read-only `in_place` synthesis & review (`synthesize -> review`) aware of `acdd.yaml` `specs.*` configurations | `acdd start --goal "..." --workflow spec_planning` (or path to template) |
 | Custom (`.acdd/workflows/<name>.yaml`, e.g. `hotfix`) | Repo-local workflow overlays (`gates_patch:` / `inherit:`), e.g. `hotfix` (`goal.build -> goal.review -> goal.deliver -> run_tests -> handoff`, skipping `blueprint_synthesis` & `integration_review`) | `acdd start --goal "..." --workflow hotfix --scope <path>...` |
 
-1. Inspect cross-worktree specs, dependency waves, critical paths, and scope-overlap markers via CLI `acdd roadmap [spec_id] [--spec NAME] [--ready] [--active] [--tasks]` (MCP `acdd_state` is active-run-only and redirects `roadmap`/`draft` to CLI), then start a run with one of the workflow commands above (adding `--in-place`, `--scope <glob>`, or `--worktree` as needed).
+1. Inspect cross-worktree specs, dependency waves, critical paths, and scope-overlap markers via CLI `acdd roadmap [spec_id] [--spec NAME] [--all] [--tag TAG] [--field KEY=VALUE] [--group-by AXIS] [--color auto|always|never] [--ready] [--active] [--tasks]` (MCP `acdd_state` is active-run-only and redirects `roadmap`/`draft` to CLI), then start a run with one of the workflow commands above (adding `--in-place`, `--scope <glob>`, or `--worktree` as needed).
 2. Inspect ready cursors (`acdd_state(action="next")` / `acdd next`). For `mode: subagent` gates, the coordinator dispatches `(run, node_cursor, worker_id)` and the **worker itself** calls `acdd_claim` / `acdd claim` first before editing files (default `<= 10,000` bytes compact soft cap with `omitted_sections`; pass `detail="full"` for up to `32 KiB`; omit `worktree` under `git.worktrees: managed` so `claim` creates/reuses `.worktrees/<run_name>-<task_ref>`, because passing an explicit `worktree` overrides auto-creation; `session_fingerprint` and full `ClaimResp` bind to the real worker process, which then indexes/syncs `ClaimResp.worktree` via `acdd -C <ClaimResp.worktree> build` or MCP `worktree` before reading/querying code and works strictly inside `ClaimResp.worktree`); the coordinator calls `acdd_claim` directly only for `mode: inline` gates or dead-worker recovery.
 3. Follow `ClaimResp` (`contract`, `guidance`, `unresolved_findings`, `pre_task_slice`
    including `predecessor_proofs`, `blackboard`, and `context_lenses`). Stay within

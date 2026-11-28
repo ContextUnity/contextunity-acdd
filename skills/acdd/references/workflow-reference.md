@@ -16,9 +16,13 @@ and compiles via `acdd validate`. Repository defaults live in `.acdd/workflows/d
   - `none`: standalone graph with zero inherited settings.
   - `<relpath>[:<sha256_prefix>]`: inherit from a repo-confined YAML file (optional min-7-hex SHA-256 content pin; ready-to-copy `audit.yaml`, `spec_planning.yaml`, and `hotfix.yaml` templates ship under `references/acdd-workflow-examples/`).
 
-Inherited maps (`roles`, `commands`, `scope_args_by_pattern`, `proofs`, `guidance`,
-`contours`, `gate_templates`) merge by key (`key: null` clears an inherited
-entry). Passing `--in-place` on `acdd start` overrides isolation to `in_place`,
+Inherited maps (`paths`, `roles`, `commands`, `scope_args_by_pattern`, `proofs`,
+`guidance`, `contours`, `gate_templates`) merge by key (`key: null` clears an
+inherited entry; `base.yaml` defines default `paths` for `docs`, `adrs`, and
+`instructions`). Workflows reject top-level `specs:` / `roadmap:` keys (which
+belong in `acdd.yaml`) and legacy `docs.instructions` / `docs.adrs` context
+lenses (redirecting to `paths.instructions` / `paths.adrs`) with
+`ACDD_WORKFLOW_SCHEMA_INVALID`. Passing `--in-place` on `acdd start` overrides isolation to `in_place`,
 `worktrees: manual`, top-level `save: none`, and neutralizes `save.post: commit`
 to `none` while preserving `save.immutable: true`.
 
@@ -42,6 +46,7 @@ acdd validate .acdd/workflows/hotfix.yaml                                       
 | `git` | `{ isolation: worktree \| in_place, worktrees: manual \| managed }` | Defaults: `worktree`, `manual`. `managed` creates/cleans task & run worktrees. |
 | `save` | `none \| commit` | Default save action for terminal root gate (default `commit` in `base`). |
 | `tags` | `[<string>, ...]` or `null` | Allowed task tags (`default` is always permitted; `code` adds `docs`). |
+| `paths` | `{ <name>: [<glob>, ...] }` | Named non-spec path globs exposed as `paths.<name>` (`base.yaml` defaults: `docs`, `adrs`, `instructions`). |
 | `protected_paths` | `[<glob>, ...]` | Paths protected from normal task edits even if matched elsewhere. |
 | `default_tools` | `[<tool_name>, ...]` | Default MCP allowlist for gates omitting `tools:`. |
 | `modules` | `{ preset?, enabled?, disabled?, required?, domains? }` | Subsystem preset/toggles (`domains.<id>: false \| null` patches domains). |
@@ -92,8 +97,8 @@ Inside `gates_patch`:
 - `when`: boolean expression over task tags (`tag`, `!tag`, `&`/`+`, `|`, parentheses; allowed on `- tasks:` and task gates, forbidden on root gates).
 - `use`: expand named template from `gate_templates`.
 - `role`, `command`, `call` (`"<domain>.<action>"`), `with` (JSON arguments for `call`).
-- `checks`: list of `"<domain>.<check>"` or `{ check, with? }` (e.g. `code.seam`, `code.lint`, `code.signature_scope`, `docs.links`).
-- `context`: list of domain context lenses (e.g. `docs.instructions`, `docs.adrs`, `docs.invariants`, `code.symbols`, `code.tests`, `code.external_callers`).
+- `checks`: list of `"<domain>.<check>"` or `{ check, with? }` (e.g. `code.seam`, `code.lint`, `code.signature_scope`, `docs.links`, `docs.specs`, `spec.deltas_applied`).
+- `context`: list of domain context lenses (e.g. `specs.memories`, `paths.instructions`, `paths.adrs`, `docs.invariants`, `code.symbols`, `code.tests`, `code.external_callers`).
 - `proof`: `none` (default) | `command` | `call` | `review` (requires `role` + non-empty `contours`) | `<catalog_id>` | `{ scheme: <JSON Schema> }`.
 - `tools` / `tools_add` / `tools_remove`: replace or adjust `default_tools` (validated fail-closed against static + registered `DomainProvider` plugin tools).
 - `guidance`, `contours`, `scope` (`[<glob>, ...]` explicit gate scope e.g. `polish`).
