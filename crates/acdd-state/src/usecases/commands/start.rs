@@ -126,6 +126,7 @@ fn build_attached_spec_record(
     let items = doc
         .items
         .iter()
+        .filter(|(_, list)| !list.is_empty())
         .map(|(col_key, list)| {
             let summaries = list
                 .iter()

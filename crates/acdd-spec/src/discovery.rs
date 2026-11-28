@@ -99,6 +99,23 @@ pub fn effective_spec_collections(
     }
 }
 
+/// Return all configured collections matching `selector` either by literal collection key
+/// or by `effective_builtin_base(Some(key)) == Some(selector)`.
+pub fn matching_spec_collections<'a>(
+    collections: &'a BTreeMap<String, SpecConfig>,
+    selector: &str,
+) -> Vec<(&'a String, &'a SpecConfig)> {
+    if selector.is_empty() {
+        return Vec::new();
+    }
+    collections
+        .iter()
+        .filter(|(k, cfg)| {
+            k.as_str() == selector || cfg.effective_builtin_base(Some(k.as_str())) == Some(selector)
+        })
+        .collect()
+}
+
 /// Match a workspace-relative spec path to its owning collection key by longest matching pattern.
 pub fn match_spec_collection(
     collections: &BTreeMap<String, SpecConfig>,
@@ -725,7 +742,11 @@ fn collect_workspace_specs_cached_inner(
                 continue;
             }
             if ft.is_dir() {
-                if entry.file_name() != "archive" {
+                if entry
+                    .file_name()
+                    .to_str()
+                    .is_none_or(|name| !ctx.col.is_ignored_dir_name(name))
+                {
                     walk(ctx, &path, found, errors, parsed);
                 }
                 continue;
@@ -733,10 +754,7 @@ fn collect_workspace_specs_cached_inner(
             let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
                 continue;
             };
-            if !ft.is_file()
-                || !name.ends_with(".md")
-                || matches!(name.as_str(), "README.md" | "AGENTS.md" | "CLAUDE.md")
-            {
+            if !ft.is_file() || !name.ends_with(".md") || ctx.col.is_ignored_entry_name(&name) {
                 continue;
             }
             match read_confined_utf8(ctx.root, &rel_str) {

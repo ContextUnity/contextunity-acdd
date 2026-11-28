@@ -285,6 +285,7 @@ fn collect_change_snapshot(
     path_scope: Option<&str>,
     base: Option<&str>,
     policy: Option<&WorkspacePathPolicy>,
+    allow_tree_base: bool,
 ) -> Result<ChangeSnapshot> {
     anyhow::ensure!(
         matches!(mode, "staged" | "unstaged" | "head"),
@@ -298,7 +299,13 @@ fn collect_change_snapshot(
     let base_oid = base
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(|rev| git::resolve_git_commit(root, rev))
+        .map(|rev| {
+            if allow_tree_base {
+                git::resolve_git_tree_or_commit(root, rev)
+            } else {
+                git::resolve_git_commit(root, rev)
+            }
+        })
         .transpose()?;
     let adapter = config::load_adapter(root, None)?;
     let exposure = source::PathExposureFilter::new(root, &adapter, policy)?;
@@ -1022,7 +1029,7 @@ fn compute_core_change_impact(
     policy: Option<&WorkspacePathPolicy>,
     request: &TraversalOptions<'_>,
 ) -> Result<CoreChangeImpact> {
-    let snapshot = collect_change_snapshot(conn, root, mode, path_scope, base, policy)?;
+    let snapshot = collect_change_snapshot(conn, root, mode, path_scope, base, policy, false)?;
     let graph_generation =
         validate_snapshot_continuation(conn, request.page, &snapshot.fingerprint)?;
     let excluded_csv = excluded_ids_csv(&snapshot.exposure.disallowed_path_ids(conn)?);
@@ -1079,12 +1086,87 @@ fn ensure_snapshot_stable(
     policy: Option<&WorkspacePathPolicy>,
     expected_fingerprint: &str,
 ) -> Result<()> {
-    let final_snapshot = collect_change_snapshot(conn, root, mode, path_scope, base, policy)?;
+    let final_snapshot =
+        collect_change_snapshot(conn, root, mode, path_scope, base, policy, false)?;
     anyhow::ensure!(
         final_snapshot.fingerprint == expected_fingerprint,
         "Git change view changed while computing impact; restart at offset 0"
     );
     Ok(())
+}
+
+fn collect_symbol_seed_rows(
+    conn: &Connection,
+    sql: &str,
+    param: &str,
+    names: &mut BTreeSet<String>,
+    hashes: &mut BTreeSet<i64>,
+) -> Result<()> {
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map([param], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    for (hash, name, qualname) in rows.flatten() {
+        hashes.insert(hash);
+        if !name.is_empty() {
+            names.insert(name);
+        }
+        if !qualname.is_empty() {
+            names.insert(qualname);
+        }
+    }
+    Ok(())
+}
+
+/// Collect `(symbol_names_and_qualnames, changed_node_hashes)` for declarations overlapping
+/// active Git diff hunks against `base` (defaulting to `HEAD`), plus declarations in newly
+/// added/untracked indexed files (`diff_paths`).
+pub fn collect_changed_symbol_seeds(
+    conn: &Connection,
+    root: &Path,
+    base: Option<&str>,
+    diff_paths: &BTreeSet<String>,
+) -> Result<(BTreeSet<String>, BTreeSet<i64>)> {
+    let mut names = BTreeSet::new();
+    let mut hashes = BTreeSet::new();
+    let Ok(snapshot) = collect_change_snapshot(conn, root, "head", None, base, None, true) else {
+        // Large or unavailable diff snapshots return empty symbol seeds cleanly;
+        // file-level diff overlap in docs_domain ranking still handles them.
+        return Ok((names, hashes));
+    };
+    let covered_paths: BTreeSet<String> = snapshot.files.iter().map(|f| f.path.clone()).collect();
+    let effective_ranges: Vec<ChangedRange> = snapshot
+        .files
+        .iter()
+        .flat_map(|file| file.ranges.iter().cloned())
+        .collect();
+    if !effective_ranges.is_empty() {
+        let ranges_json = change_ranges_json(&effective_ranges)?;
+        let from = changed_range_from_sql();
+        let sql = format!(
+            "SELECT DISTINCT n.node_hash, n.name, n.qualname FROM {from} \
+             WHERE n.kind NOT IN ('doc', 'doc_section', 'invariant', 'component')"
+        );
+        collect_symbol_seed_rows(conn, &sql, &ranges_json, &mut names, &mut hashes)?;
+    }
+    let untracked_paths: BTreeSet<&String> = diff_paths
+        .iter()
+        .filter(|p| !covered_paths.contains(*p))
+        .collect();
+    if !untracked_paths.is_empty() {
+        let paths_json = serde_json::to_string(&untracked_paths)?;
+        let sql = "SELECT DISTINCT n.node_hash, n.name, n.qualname
+             FROM nodes n
+             JOIN path_dictionary p ON p.path_id = n.path_id
+             WHERE p.path IN (SELECT value FROM json_each(?1))
+               AND n.kind NOT IN ('file', 'module', 'doc', 'doc_section', 'invariant', 'component')";
+        collect_symbol_seed_rows(conn, sql, &paths_json, &mut names, &mut hashes)?;
+    }
+    Ok((names, hashes))
 }
 
 pub(crate) fn diff_impact_with_options(

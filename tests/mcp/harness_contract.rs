@@ -511,9 +511,9 @@ fn mcp_session_context_is_absent_from_schemas_and_rejected_in_json() {
 #[test]
 fn mcp_relative_worktrees_custom_dbs_and_extra_providers_contract() {
     use acdd_core::ports::{
-        CheckCapability, DomainActionReq, DomainActionResult, DomainCapabilities,
-        DomainCheckOutcome, DomainCheckReq, DomainContextReq, DomainProvider, DomainToolOutput,
-        DomainToolReq, FreshnessObservation,
+        CheckCapability, ContextCapability, DomainActionReq, DomainActionResult,
+        DomainCapabilities, DomainCheckOutcome, DomainCheckReq, DomainContextReq, DomainProvider,
+        DomainToolOutput, DomainToolReq, FreshnessObservation,
     };
     use contextunity_acdd::{
         mcp::server::Server,
@@ -524,7 +524,7 @@ fn mcp_relative_worktrees_custom_dbs_and_extra_providers_contract() {
         service::{serve_directly, RequestContext, RoleServer},
         ServerHandler,
     };
-    use std::{collections::BTreeSet, sync::Arc};
+    use std::sync::Arc;
 
     struct ProbeProvider;
     impl DomainProvider for ProbeProvider {
@@ -537,7 +537,7 @@ fn mcp_relative_worktrees_custom_dbs_and_extra_providers_contract() {
                     name: "ping".into(),
                     input_schema: acdd_core::schema::SchemaDef::object(),
                 }],
-                context_lenses: BTreeSet::from(["status".to_owned()]),
+                context: vec![ContextCapability::simple("status")],
                 ..DomainCapabilities::default()
             }
         }
@@ -770,6 +770,7 @@ fn mcp_relative_worktrees_custom_dbs_and_extra_providers_contract() {
                     baseline_ref: None,
                     lens_globs: Vec::new(),
                     citation_text: None,
+                    params: Value::Null,
                 }
             )
             .unwrap(),
@@ -821,6 +822,7 @@ fn mcp_relative_worktrees_custom_dbs_and_extra_providers_contract() {
                 baseline_ref: None,
                 lens_globs: vec!["docs/adr/**".to_owned()],
                 citation_text: None,
+                params: Value::Null,
             },
         )
         .unwrap();

@@ -12,6 +12,7 @@ docs:
   - docs/README.md
   - docs/adr
   - docs/architecture
+  - docs/memories
   - docs/milestones
   - docs/plans
   - docs/reference
@@ -35,6 +36,10 @@ specs:
   memories:
     path: docs/memories
     base: memory
+    roadmap: false
+  retrospectives:
+    path: docs/memories/.retro
+    ref: retrospective
     roadmap: false
 preset: full
 workflows_dirs:

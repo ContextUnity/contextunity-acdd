@@ -150,6 +150,9 @@ pub struct SpecConfig {
     /// Whether specs in this collection appear in `acdd roadmap` by default (`true` on `contract`, `false` on `memory`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roadmap: Option<bool>,
+    /// Optional single-segment entry ignore patterns under this collection (defaults to `["archive", ".*", "README.md", "AGENTS.md", "CLAUDE.md"]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ignore: Option<Vec<String>>,
     /// Allowed spec ID prefixes (e.g. `["AC"]`).
     #[serde(default)]
     pub prefixes: Vec<String>,
@@ -177,6 +180,7 @@ impl Default for SpecConfig {
             spec_ref: None,
             workflow: None,
             roadmap: None,
+            ignore: None,
             prefixes: Vec::new(),
             digits: DEFAULT_SPEC_DIGITS,
             fields: None,
@@ -184,6 +188,9 @@ impl Default for SpecConfig {
         }
     }
 }
+
+/// Default single-segment directory and router-doc ignore patterns for spec collections when `ignore:` is omitted.
+pub const DEFAULT_SPEC_IGNORE: &[&str] = &["archive", ".*", "README.md", "AGENTS.md", "CLAUDE.md"];
 
 impl SpecConfig {
     /// Effective built-in base (`"contract"` or `"memory"`) for a named collection,
@@ -205,6 +212,76 @@ impl SpecConfig {
     pub fn effective_roadmap(&self, collection_key: Option<&str>) -> bool {
         self.roadmap
             .unwrap_or_else(|| self.effective_builtin_base(collection_key) != Some("memory"))
+    }
+
+    /// Effective single-segment ignore patterns (`DEFAULT_SPEC_IGNORE` when `ignore:` is omitted).
+    pub fn effective_ignore_patterns(&self) -> Vec<&str> {
+        match &self.ignore {
+            Some(entries) => entries.iter().map(String::as_str).collect(),
+            None => DEFAULT_SPEC_IGNORE.to_vec(),
+        }
+    }
+
+    /// Return `true` if a single directory or file entry `name` matches this collection's `ignore` patterns.
+    pub fn is_ignored_entry_name(&self, name: &str) -> bool {
+        if name.is_empty() || name.contains('/') || name.contains('\\') {
+            return false;
+        }
+        self.effective_ignore_patterns()
+            .into_iter()
+            .any(|pat| crate::path_policy::glob_matches(pat, name))
+    }
+
+    /// Return `true` if a single directory segment `name` matches this collection's `ignore` patterns.
+    pub fn is_ignored_dir_name(&self, name: &str) -> bool {
+        self.is_ignored_entry_name(name)
+    }
+
+    /// Return `true` if `rel` lies inside an ignored subdirectory or matches an ignored entry name
+    /// strictly below this collection's matched concrete root (e.g. `archive/`, `.retro/`, `README.md`).
+    pub fn is_ignored_rel_path(&self, rel: &str) -> bool {
+        let trimmed = rel.trim().replace('\\', "/");
+        let norm = trimmed
+            .strip_prefix("./")
+            .unwrap_or(&trimmed)
+            .trim_end_matches('/');
+        if norm.is_empty() {
+            return false;
+        }
+        let Some(root) = self.matched_concrete_root(norm) else {
+            return false;
+        };
+        let Some(rest) = norm.strip_prefix(&root).and_then(|s| s.strip_prefix('/')) else {
+            return false;
+        };
+        rest.split('/').any(|seg| self.is_ignored_entry_name(seg))
+    }
+
+    /// Return `true` if every path matched by `other_pat` lies strictly inside an ignored
+    /// subdirectory of `self` (so the two collections' active file sets are disjoint).
+    pub fn ignores_subpattern(&self, other_pat: &str) -> bool {
+        let variants = crate::path_policy::expand_glob_braces(other_pat);
+        !variants.is_empty()
+            && variants.into_iter().all(|variant| {
+                let trimmed = variant
+                    .trim()
+                    .replace('\\', "/")
+                    .trim_start_matches("./")
+                    .trim_end_matches('/')
+                    .to_owned();
+                let base = trimmed.strip_suffix("/**").unwrap_or(&trimmed);
+                if base.is_empty() {
+                    return false;
+                }
+                let Some(root) = self.matched_concrete_root(&format!("{base}/__probe__")) else {
+                    return false;
+                };
+                let Some(dir_rest) = base.strip_prefix(&root).and_then(|s| s.strip_prefix('/'))
+                else {
+                    return false;
+                };
+                dir_rest.split('/').any(|seg| self.is_ignored_dir_name(seg))
+            })
     }
     /// Return all configured normalized patterns (`path` followed by `paths`, deduplicated in order).
     pub fn patterns(&self) -> Vec<&str> {
@@ -402,6 +479,24 @@ pub(super) fn validate_and_normalize_specs(
                 ));
             }
         }
+        if let Some(ref mut ignore_pats) = cfg.ignore {
+            for pat in ignore_pats.iter_mut() {
+                let trimmed = pat.trim().to_owned();
+                if trimmed.is_empty()
+                    || matches!(trimmed.as_str(), "." | "..")
+                    || trimmed.contains('/')
+                    || trimmed.contains('\\')
+                {
+                    return Err(AcddError::new(
+                        ErrorCode::SpecSchemaInvalid,
+                        format!(
+                            "specs.{name}.ignore entry '{pat}' must be a non-empty single-segment directory name or glob"
+                        ),
+                    ));
+                }
+                *pat = trimmed;
+            }
+        }
         if let Some(ref workflow) = cfg.workflow {
             if workflow.trim().is_empty() {
                 return Err(AcddError::new(
@@ -467,10 +562,15 @@ pub(super) fn validate_and_normalize_specs(
         normalized_entries.push((name.clone(), pats));
     }
     for (i, (left_name, left_pats)) in normalized_entries.iter().enumerate() {
+        let left_cfg = &specs[left_name];
         for (right_name, right_pats) in normalized_entries.iter().skip(i + 1) {
+            let right_cfg = &specs[right_name];
             for pat_a in left_pats {
                 for pat_b in right_pats {
-                    if crate::path_policy::patterns_overlap(pat_a, pat_b) {
+                    if crate::path_policy::patterns_overlap(pat_a, pat_b)
+                        && !left_cfg.ignores_subpattern(pat_b)
+                        && !right_cfg.ignores_subpattern(pat_a)
+                    {
                         return Err(AcddError::new(
                             ErrorCode::SpecSchemaInvalid,
                             format!(
@@ -976,6 +1076,8 @@ mod tests {
             "roots: [.]\nspecs:\n  milestones:\n    path: /abs/path\n",
             "roots: [.]\nspecs:\n  milestones:\n    paths: [docs/{unclosed]\n",
             "roots: [.]\nspecs:\n  a:\n    path: docs/specs\n  b:\n    path: docs/specs/sub\n",
+            "roots: [.]\nspecs:\n  memories:\n    path: docs/memories\n    ignore: [sub/dir]\n",
+            "roots: [.]\nspecs:\n  memories:\n    path: docs/memories\n    ignore: ['..']\n",
         ] {
             std::fs::write(root.join(ACDD_CONFIG_FILE), bad_yaml).unwrap();
             assert!(
@@ -983,6 +1085,40 @@ mod tests {
                 "expected error for:\n{bad_yaml}"
             );
         }
+
+        // SpecConfig.ignore defaults (["archive", ".*", "README.md", "AGENTS.md", "CLAUDE.md"]) and disjoint subcollection check.
+        let mem_cfg = SpecConfig {
+            path: Some("docs/memories".to_owned()),
+            base: Some("memory".to_owned()),
+            ..SpecConfig::default()
+        };
+        assert_eq!(
+            mem_cfg.effective_ignore_patterns(),
+            vec!["archive", ".*", "README.md", "AGENTS.md", "CLAUDE.md"]
+        );
+        assert!(mem_cfg.is_ignored_dir_name("archive"));
+        assert!(mem_cfg.is_ignored_dir_name(".retro"));
+        assert!(mem_cfg.is_ignored_dir_name(".processed"));
+        assert!(mem_cfg.is_ignored_entry_name("README.md"));
+        assert!(mem_cfg.is_ignored_entry_name("AGENTS.md"));
+        assert!(mem_cfg.is_ignored_entry_name("CLAUDE.md"));
+        assert!(!mem_cfg.is_ignored_dir_name("domains"));
+        assert!(mem_cfg.is_ignored_rel_path("docs/memories/.retro/code/AC-006.md"));
+        assert!(mem_cfg.is_ignored_rel_path("docs/memories/archive/old.md"));
+        assert!(mem_cfg.is_ignored_rel_path("docs/memories/README.md"));
+        assert!(!mem_cfg.is_ignored_rel_path("docs/memories/worktree.md"));
+        assert!(mem_cfg.ignores_subpattern("docs/memories/.retro"));
+        assert!(!mem_cfg.ignores_subpattern("docs/memories/domains"));
+
+        let nested_cfg = SpecConfig {
+            path: Some("docs/memories/.notes".to_owned()),
+            spec_ref: Some("ext_notes".to_owned()),
+            roadmap: Some(false),
+            ..SpecConfig::default()
+        };
+        assert!(!nested_cfg.effective_roadmap(Some("notes")));
+        assert!(!nested_cfg.is_ignored_rel_path("docs/memories/.notes/code/AC-006.md"));
+        assert!(nested_cfg.is_ignored_rel_path("docs/memories/.notes/code/.processed/AC-005.md"));
 
         #[cfg(unix)]
         {

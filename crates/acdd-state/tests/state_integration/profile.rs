@@ -1,7 +1,8 @@
 use acdd_core::errors::ErrorCode;
 use acdd_core::ids::{CommitOid, GateId, NodeCursor, RunId, RunName, TreeOid, WorkerId};
 use acdd_core::ports::{
-    ActionCapability, CheckCapability, CompositeDomainProvider, DomainCapabilities, DomainToolDef,
+    ActionCapability, CheckCapability, CompositeDomainProvider, ContextCapability,
+    ContextScopeMode, DomainCapabilities, DomainToolDef,
 };
 use acdd_core::schema::{AdditionalPropertiesDef, SchemaDef};
 use acdd_core::subsystems::SubsystemRegistry;
@@ -48,11 +49,22 @@ fn code_and_docs_providers() -> CompositeDomainProvider {
                     input_schema: acdd_core::lint::lint_check_input_schema(),
                 },
             ],
-            context_lenses: BTreeSet::from([
-                "symbols".to_owned(),
-                "tests".to_owned(),
-                "external_callers".to_owned(),
-            ]),
+            context: vec![
+                ContextCapability {
+                    name: "symbols".to_owned(),
+                    scope_mode: ContextScopeMode::NodeOnly,
+                    default_paths_key: None,
+                    input_schema: SchemaDef::object(),
+                },
+                ContextCapability {
+                    name: "tests".to_owned(),
+                    scope_mode: ContextScopeMode::NodeOnly,
+                    default_paths_key: None,
+                    input_schema: SchemaDef::object(),
+                },
+                ContextCapability::simple("external_callers"),
+            ],
+            supports_collection_context: false,
             tools: vec![],
         },
     );
@@ -70,12 +82,16 @@ fn code_and_docs_providers() -> CompositeDomainProvider {
                     input_schema: SchemaDef::object(),
                 },
             ],
-            context_lenses: BTreeSet::from([
-                "instructions".to_owned(),
-                "adrs".to_owned(),
-                "invariants".to_owned(),
-                "workspace_config".to_owned(),
-            ]),
+            context: vec![
+                ContextCapability {
+                    name: "invariants".to_owned(),
+                    scope_mode: ContextScopeMode::Admitted,
+                    default_paths_key: Some("docs".to_owned()),
+                    input_schema: SchemaDef::object(),
+                },
+                ContextCapability::simple("workspace_config"),
+            ],
+            supports_collection_context: true,
             tools: vec![],
         },
     );
@@ -99,7 +115,8 @@ fn code_and_docs_providers() -> CompositeDomainProvider {
                 name: "health".to_owned(),
                 input_schema: SchemaDef::object(),
             }],
-            context_lenses: BTreeSet::from(["endpoints".to_owned()]),
+            context: vec![ContextCapability::simple("endpoints")],
+            supports_collection_context: false,
             tools: vec![DomainToolDef {
                 name: "probe".to_owned(),
                 description: "Probe HTTP endpoint".to_owned(),
@@ -269,7 +286,7 @@ fn embedded_profiles_resolve_and_validate_matrix() {
     );
     assert_eq!(code_p.effective_tools(code_build).len(), 18);
     assert_eq!(
-        code_build.context.first().map(String::as_str),
+        code_build.context.first().map(ContextEntry::as_str),
         Some("paths.instructions")
     );
     let code_rearch = code_tasks
@@ -381,8 +398,13 @@ fn embedded_profiles_resolve_and_validate_matrix() {
     assert!(code_handoff.save.prune);
 
     let code_polish = code_p.gates.iter().find(|g| g.id == "polish").unwrap();
-    assert!(code_polish.scope.iter().any(|s| s == "ROADMAP.md"));
-    assert!(code_polish.scope.iter().any(|s| s == "TESTS.md"));
+    assert!(code_polish.scope.iter().any(|s| s == "paths.docs"));
+    assert!(code_polish.scope.iter().any(|s| s == "paths.instructions"));
+    assert!(!code_polish.scope.iter().any(|s| s == "website/**"));
+    assert!(!code_polish.scope.iter().any(|s| s == "ROADMAP.md"));
+    let repo_polish = repo_p.gates.iter().find(|g| g.id == "polish").unwrap();
+    assert!(repo_polish.scope.iter().any(|s| s == "ROADMAP.md"));
+    assert!(repo_polish.scope.iter().any(|s| s == "website/**"));
 
     let doc_p = resolve_workflow_ref_with_dirs("documentation", None, None, None).unwrap();
     assert!(doc_p.tags.contains("docs"));

@@ -397,6 +397,7 @@ fn specs_and_paths_scope_expansion_and_docs_invariants_over_custom_paths_docs() 
                 baseline_ref: None,
                 lens_globs: wf.paths.get("docs").cloned().unwrap_or_default(),
                 citation_text: None,
+                params: serde_json::Value::Null,
             },
         )
         .unwrap();
@@ -728,6 +729,7 @@ fn four_tier_relevance_ranking_budget_eviction_and_markdown_rendering() {
                 baseline_ref: None,
                 lens_globs: wf.paths.get("notes").cloned().unwrap_or_default(),
                 citation_text: Some(spec.body),
+                params: serde_json::Value::Null,
             },
         )
         .unwrap();
@@ -764,6 +766,7 @@ fn four_tier_relevance_ranking_budget_eviction_and_markdown_rendering() {
                 baseline_ref: None,
                 lens_globs: vec!["docs/utf8_notes/**".to_owned()],
                 citation_text: Some("See xÉclair Guide only".to_owned()),
+                params: serde_json::Value::Null,
             },
         )
         .unwrap();
@@ -788,6 +791,7 @@ fn four_tier_relevance_ranking_budget_eviction_and_markdown_rendering() {
                 baseline_ref: None,
                 lens_globs: vec!["docs/utf8_notes/**".to_owned()],
                 citation_text: Some("See xÉclair Guide and Éclair Guide".to_owned()),
+                params: serde_json::Value::Null,
             },
         )
         .unwrap();

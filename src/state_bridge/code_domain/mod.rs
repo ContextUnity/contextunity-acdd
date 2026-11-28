@@ -11,14 +11,14 @@ pub(crate) use lint::ensure_fresh_worktree_index;
 
 use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::ports::{
-    CheckCapability, DomainActionReq, DomainActionResult, DomainCapabilities, DomainCheckOutcome,
-    DomainCheckReq, DomainContextReq, DomainProvider, FreshnessObservation,
+    CheckCapability, ContextCapability, ContextScopeMode, DomainActionReq, DomainActionResult,
+    DomainCapabilities, DomainCheckOutcome, DomainCheckReq, DomainContextReq, DomainProvider,
+    FreshnessObservation,
 };
 use acdd_core::schema::SchemaDef;
 use acdd_core::subsystems::SubsystemId;
 use anyhow::Result;
 use serde_json::Value;
-use std::collections::BTreeSet;
 
 impl DomainProvider for CodeDomainProvider {
     fn domain_id(&self) -> &str {
@@ -42,11 +42,22 @@ impl DomainProvider for CodeDomainProvider {
                     input_schema: acdd_core::lint::lint_check_input_schema(),
                 },
             ],
-            context_lenses: BTreeSet::from([
-                "symbols".to_owned(),
-                "tests".to_owned(),
-                "external_callers".to_owned(),
-            ]),
+            context: vec![
+                ContextCapability {
+                    name: "symbols".to_owned(),
+                    scope_mode: ContextScopeMode::NodeOnly,
+                    default_paths_key: None,
+                    input_schema: SchemaDef::object(),
+                },
+                ContextCapability {
+                    name: "tests".to_owned(),
+                    scope_mode: ContextScopeMode::NodeOnly,
+                    default_paths_key: None,
+                    input_schema: SchemaDef::object(),
+                },
+                ContextCapability::simple("external_callers"),
+            ],
+            supports_collection_context: false,
             tools: Vec::new(),
         }
     }
@@ -826,6 +837,7 @@ mod tests {
                     baseline_ref: None,
                     lens_globs: Vec::new(),
                     citation_text: None,
+                    params: serde_json::Value::Null,
                 },
             )
             .unwrap();

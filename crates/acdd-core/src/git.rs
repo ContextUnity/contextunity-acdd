@@ -430,6 +430,51 @@ pub fn resolve_git_commit(worktree: &Path, rev: &str) -> Result<String> {
     )
 }
 
+/// Validates and resolves `rev` to a commit OID or tree OID inside `worktree`.
+pub fn resolve_git_tree_or_commit(worktree: &Path, rev: &str) -> Result<String> {
+    let rev = validate_git_rev(rev)?;
+    let commit_spec = format!("{rev}^{{commit}}");
+    if let Ok(oid) = git_stdout(
+        worktree,
+        &["rev-parse", "--verify", "-q", &commit_spec],
+        "GIT_BASE_INVALID",
+    ) {
+        return Ok(oid);
+    }
+    let tree_spec = format!("{rev}^{{tree}}");
+    git_stdout(
+        worktree,
+        &["rev-parse", "--verify", &tree_spec],
+        "GIT_BASE_INVALID",
+    )
+}
+
+/// Collect gitignored untracked workspace-relative paths under `root` (`BTreeSet` empty outside Git repos).
+pub fn collect_gitignored_untracked_files(root: &Path) -> std::collections::BTreeSet<String> {
+    let mut ignored = std::collections::BTreeSet::new();
+    let Ok(out) = git_command(
+        root,
+        &["ls-files", "--others", "--ignored", "--exclude-standard", "-z"],
+    ) else {
+        return ignored;
+    };
+    if !out.status.success() {
+        return ignored;
+    }
+    for entry in out.stdout.split(|&b| b == 0) {
+        if entry.is_empty() {
+            continue;
+        }
+        let Ok(raw) = std::str::from_utf8(entry) else {
+            continue;
+        };
+        if let Some(norm) = crate::path_policy::normalize_rel_path(raw) {
+            ignored.insert(norm);
+        }
+    }
+    ignored
+}
+
 /// Single file entry from bounded `git log --name-status -z --find-renames`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GitLogFileChange {

@@ -194,13 +194,14 @@ fn expand_gate_scope(
     };
     for entry in raw_scope {
         if let Some(name) = entry.strip_prefix("specs.") {
-            let col = spec_collections.get(name).ok_or_else(|| {
-                AcddError::new(
+            let cols = acdd_spec::matching_spec_collections(spec_collections, name);
+            if cols.is_empty() {
+                return Err(AcddError::new(
                     ErrorCode::WorkflowSchemaInvalid,
                     format!("gate '{gate_id}': unknown spec reference '{entry}' in scope:"),
-                )
-            })?;
-            let patterns = col.patterns();
+                ));
+            }
+            let patterns: Vec<&str> = cols.into_iter().flat_map(|(_, col)| col.patterns()).collect();
             if patterns.is_empty() {
                 return Err(AcddError::new(
                     ErrorCode::WorkflowSchemaInvalid,

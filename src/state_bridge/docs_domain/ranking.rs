@@ -1,6 +1,8 @@
 //! Candidate ranking, citation matching, and frontmatter metadata parsing for `paths.*` / `specs.*` lenses.
 
-use super::super::common::{budget_scored_items, open_code_db_readonly};
+use super::super::common::{
+    budget_scored_items, collect_active_diff_paths, open_code_db_readonly,
+};
 use acdd_core::path_policy::{
     expand_glob_braces, glob_matches, scopes_overlap, WorkspacePathPolicy,
 };
@@ -13,7 +15,9 @@ use std::path::Path;
 
 pub(super) struct RankedDocCandidate {
     pub(super) rel_path: String,
+    pub(super) item_heading_ref: Option<String>,
     pub(super) explicit_scopes: Vec<String>,
+    pub(super) explicit_symbols: Vec<String>,
     pub(super) is_global_fallback: bool,
     pub(super) id_tokens: Vec<String>,
     pub(super) title: Option<String>,
@@ -38,18 +42,46 @@ pub(super) fn rank_and_budget_candidates(
 ) -> Result<Value> {
     candidates.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
     let candidate_paths: BTreeSet<String> = candidates.iter().map(|c| c.rel_path.clone()).collect();
-    let linked_paths = if candidate_paths.is_empty() {
-        BTreeSet::new()
-    } else if let Some(conn) = open_code_db_readonly(root, &req.worktree, code_db) {
-        collect_code_map_doc_edge_paths(
-            &conn,
-            &candidate_paths,
-            &req.admitted_scope,
-            &req.path_policy,
-        )?
-    } else {
-        BTreeSet::new()
-    };
+    let diff_paths = collect_active_diff_paths(&req.worktree, req.baseline_ref.as_deref());
+    let diff_paths_vec: Vec<String> = diff_paths.iter().cloned().collect();
+
+    let (scope_linked_paths, diff_linked_paths, diff_symbol_sections, diff_symbols) =
+        if candidate_paths.is_empty() {
+            (
+                BTreeSet::new(),
+                BTreeSet::new(),
+                BTreeSet::new(),
+                BTreeSet::new(),
+            )
+        } else if let Some(conn) = open_code_db_readonly(root, &req.worktree, code_db) {
+            let (symbols, changed_hashes) = if !diff_paths.is_empty() {
+                acdd_index::db::traversal::collect_changed_symbol_seeds(
+                    &conn,
+                    &req.worktree,
+                    req.baseline_ref.as_deref(),
+                    &diff_paths,
+                )
+                .unwrap_or_default()
+            } else {
+                (BTreeSet::new(), BTreeSet::new())
+            };
+            let (scope_linked, diff_linked, symbol_sections) = collect_code_map_doc_edge_paths(
+                &conn,
+                &candidate_paths,
+                &req.admitted_scope,
+                &diff_paths,
+                &changed_hashes,
+                &req.path_policy,
+            )?;
+            (scope_linked, diff_linked, symbol_sections, symbols)
+        } else {
+            (
+                BTreeSet::new(),
+                BTreeSet::new(),
+                BTreeSet::new(),
+                BTreeSet::new(),
+            )
+        };
 
     let mut citation_corpus = String::new();
     if let Some(target) = req.target.as_deref() {
@@ -70,15 +102,34 @@ pub(super) fn rank_and_budget_candidates(
             .filter(|s| !is_global_wildcard(s))
             .cloned()
             .collect();
+        let diff_symbol_hit = (!diff_symbols.is_empty()
+            && candidate_matches_diff_symbols(&cand.explicit_symbols, &diff_symbols))
+            || cand.item_heading_ref.as_ref().is_some_and(|heading| {
+                diff_symbol_sections.contains(&(cand.rel_path.clone(), heading.clone()))
+            });
+        let diff_scope_hit = !diff_paths_vec.is_empty()
+            && !non_global_scopes.is_empty()
+            && scopes_overlap(&diff_paths_vec, &non_global_scopes);
+        let diff_edge_hit = diff_linked_paths.contains(&cand.rel_path);
+
         let tier_base =
             if !citation_lower.trim().is_empty() && is_direct_citation(&cand, &citation_lower) {
                 1_u64 << 56
+            } else if diff_symbol_hit || diff_scope_hit || diff_edge_hit {
+                let diff_subtier = if diff_symbol_hit {
+                    1_u64 << 44
+                } else if diff_scope_hit {
+                    1_u64 << 43
+                } else {
+                    0
+                };
+                (1_u64 << 48) + diff_subtier
             } else if !req.admitted_scope.is_empty()
                 && !non_global_scopes.is_empty()
                 && scopes_overlap(&req.admitted_scope, &non_global_scopes)
             {
                 1_u64 << 42
-            } else if linked_paths.contains(&cand.rel_path) {
+            } else if scope_linked_paths.contains(&cand.rel_path) {
                 1_u64 << 28
             } else if cand.is_global_fallback {
                 1_u64 << 14
@@ -134,7 +185,9 @@ pub(super) fn is_global_wildcard(pattern: &str) -> bool {
 }
 
 pub(super) fn is_archived_doc_rel(rel_path: &str) -> bool {
-    rel_path.starts_with("archive/") || rel_path.contains("/archive/")
+    rel_path
+        .split('/')
+        .any(|seg| seg == "archive" || (seg.starts_with('.') && seg != "." && seg != ".."))
 }
 
 pub(super) fn any_glob_matches(globs: &[String], rel_path: &str) -> bool {
@@ -290,19 +343,46 @@ fn is_direct_citation(cand: &RankedDocCandidate, citation_lower: &str) -> bool {
         .is_some_and(|title| title.len() >= 4 && contains_ascii_ci_word(citation_lower, title))
 }
 
+fn candidate_matches_diff_symbols(
+    explicit_symbols: &[String],
+    diff_symbols: &BTreeSet<String>,
+) -> bool {
+    explicit_symbols.iter().any(|raw| {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+        let dotted = trimmed.replace("::", ".");
+        let suffix = format!(".{dotted}");
+        diff_symbols
+            .iter()
+            .any(|sym| sym == trimmed || sym == &dotted || sym.ends_with(&suffix))
+    })
+}
+
+type DocEdgeMatches = (
+    BTreeSet<String>,
+    BTreeSet<String>,
+    BTreeSet<(String, String)>,
+);
+
 fn collect_code_map_doc_edge_paths(
     conn: &Connection,
     candidate_paths: &BTreeSet<String>,
     admitted_scope: &[String],
+    diff_paths: &BTreeSet<String>,
+    changed_hashes: &BTreeSet<i64>,
     policy: &WorkspacePathPolicy,
-) -> Result<BTreeSet<String>> {
-    let mut linked = BTreeSet::new();
-    if admitted_scope.is_empty() {
-        return Ok(linked);
+) -> Result<DocEdgeMatches> {
+    let mut scope_linked = BTreeSet::new();
+    let mut diff_linked = BTreeSet::new();
+    let mut symbol_sections = BTreeSet::new();
+    if admitted_scope.is_empty() && diff_paths.is_empty() {
+        return Ok((scope_linked, diff_linked, symbol_sections));
     }
     let candidates_json = serde_json::to_string(candidate_paths)?;
     let mut stmt = conn.prepare(
-        "SELECT DISTINCT p_src.path, p_dst.path
+        "SELECT DISTINCT p_src.path, n_src.kind, n_src.name, e.src_hash, p_dst.path, n_dst.kind, n_dst.name, e.dst_hash
          FROM edges e
          JOIN nodes n_src ON n_src.node_hash = e.src_hash
          JOIN path_dictionary p_src ON p_src.path_id = n_src.path_id
@@ -315,17 +395,40 @@ fn collect_code_map_doc_edge_paths(
            )",
     )?;
     let rows = stmt.query_map([candidates_json], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, String>(6)?,
+            row.get::<_, i64>(7)?,
+        ))
     })?;
-    for (src_path, dst_path) in rows.flatten() {
-        if candidate_paths.contains(&src_path) && policy.is_scope_admitted(&dst_path, admitted_scope)
-        {
-            linked.insert(src_path.clone());
-        }
-        if candidate_paths.contains(&dst_path) && policy.is_scope_admitted(&src_path, admitted_scope)
-        {
-            linked.insert(dst_path);
-        }
+    let mut record_endpoint =
+        |doc_path: &str, doc_kind: &str, doc_name: &str, peer_path: &str, peer_hash: i64| {
+            if !candidate_paths.contains(doc_path) {
+                return;
+            }
+            if !changed_hashes.is_empty()
+                && changed_hashes.contains(&peer_hash)
+                && doc_kind == "doc_section"
+            {
+                symbol_sections.insert((doc_path.to_owned(), doc_name.to_owned()));
+            }
+            if !diff_paths.is_empty() && diff_paths.contains(peer_path) {
+                diff_linked.insert(doc_path.to_owned());
+            }
+            if !admitted_scope.is_empty() && policy.is_scope_admitted(peer_path, admitted_scope) {
+                scope_linked.insert(doc_path.to_owned());
+            }
+        };
+    for (src_path, src_kind, src_name, src_hash, dst_path, dst_kind, dst_name, dst_hash) in
+        rows.flatten()
+    {
+        record_endpoint(&src_path, &src_kind, &src_name, &dst_path, dst_hash);
+        record_endpoint(&dst_path, &dst_kind, &dst_name, &src_path, src_hash);
     }
-    Ok(linked)
+    Ok((scope_linked, diff_linked, symbol_sections))
 }

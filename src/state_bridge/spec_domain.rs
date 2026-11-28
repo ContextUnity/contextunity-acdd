@@ -134,7 +134,8 @@ impl DomainProvider for SpecDomainProvider {
                 name: "deltas_applied".to_owned(),
                 input_schema: deltas_applied_input_schema(),
             }],
-            context_lenses: BTreeSet::new(),
+            context: Vec::new(),
+            supports_collection_context: false,
             tools: Vec::new(),
         }
     }

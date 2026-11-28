@@ -13,8 +13,9 @@ use acdd_core::errors::ErrorCode;
 use acdd_core::ids::{CommitOid, GateId, NodeCursor, RunId, RunName, TaskRef, TreeOid, WorkerId};
 use acdd_core::path_policy::WorkspacePathPolicy;
 use acdd_core::ports::{
-    CompositeDomainProvider, DomainActionReq, DomainActionResult, DomainCapabilities,
-    DomainCheckOutcome, DomainCheckReq, DomainContextReq, DomainProvider,
+    CompositeDomainProvider, ContextCapability, ContextScopeMode, DomainActionReq,
+    DomainActionResult, DomainCapabilities, DomainCheckOutcome, DomainCheckReq, DomainContextReq,
+    DomainProvider,
 };
 use acdd_spec::spec::TaskSpec;
 use acdd_spec::{InvariantsState, Receipt, SpecDocument, SpecStatus};
@@ -35,12 +36,24 @@ impl DomainProvider for LensMockProvider {
 
     fn capabilities(&self) -> DomainCapabilities {
         DomainCapabilities {
-            context_lenses: self
+            context: self
                 .lenses
                 .keys()
                 .filter(|k| !k.contains('.'))
-                .cloned()
+                .map(|k| ContextCapability {
+                    name: k.clone(),
+                    scope_mode: if self.domain == "code" && matches!(k.as_str(), "symbols" | "tests")
+                    {
+                        ContextScopeMode::NodeOnly
+                    } else {
+                        ContextScopeMode::Admitted
+                    },
+                    default_paths_key: (self.domain == "docs" && k == "invariants")
+                        .then(|| "docs".to_owned()),
+                    input_schema: acdd_core::schema::SchemaDef::object(),
+                })
                 .collect(),
+            supports_collection_context: self.domain == "docs",
             ..DomainCapabilities::default()
         }
     }
@@ -90,7 +103,7 @@ fn base_request() -> ClaimContextRequest {
         id: "build".to_owned(),
         role: Some("builder".to_owned()),
         guidance: vec![GateGuidanceRef::Slot("g1".to_owned())],
-        context: vec!["code.symbols".to_owned(), "code.tests".to_owned()],
+        context: vec!["code.symbols".into(), "code.tests".into()],
         ..Default::default()
     };
 
@@ -292,9 +305,9 @@ fn context_six_tier_budget_and_guidance_fail_closed_matrix() {
         CompositeDomainProvider::with_module_flags(vec![code_provider], BTreeMap::new()).unwrap();
 
     tiered_req.gate.context = vec![
-        "code.zebra".to_owned(),
-        "code.symbols".to_owned(),
-        "code.tests".to_owned(),
+        "code.zebra".into(),
+        "code.symbols".into(),
+        "code.tests".into(),
     ];
 
     let full = build_claim_context(&tiered_req, &provider).unwrap();
@@ -828,7 +841,7 @@ fn context_six_tier_budget_and_guidance_fail_closed_matrix() {
     attached_req.pre_task_slice = None;
     attached_req.dependency_receipts.clear();
     attached_req.blackboard_items.clear();
-    attached_req.gate.context = vec!["code.zebra".to_owned(), "code.tests".to_owned()];
+    attached_req.gate.context = vec!["code.zebra".into(), "code.tests".into()];
     attached_req.run.attached_specs = vec![
         crate::types::AttachedSpecRecord {
             spec_id: "AC-006".to_owned(),
@@ -952,6 +965,10 @@ fn profile_gates_claim_context_window_budget_matrix() {
                 (
                     "paths.adrs".to_owned(),
                     json!({"items": [{"title": "ADR-0001", "path": "docs/adr/0001.md"}]}),
+                ),
+                (
+                    "specs.memories".to_owned(),
+                    json!({"items": [{"spec_id": "MEM-001", "ref": "single-owner", "summary": "Reuse canonical owners.", "path": "docs/memories/arch.md", "status": "active"}]}),
                 ),
                 (
                     "invariants".to_owned(),
@@ -1171,7 +1188,7 @@ fn context_proof_schema_pointer_manifest_and_non_circular_hints_matrix() {
         );
         // Check non-circular hint when `context_lenses` is also omitted.
         let mut lens_req = ptr_req.clone();
-        lens_req.gate.context = vec!["code.symbols".to_owned()];
+        lens_req.gate.context = vec!["code.symbols".into()];
         lens_req.pre_task_slice = None;
         lens_req.proof_pointers.clear();
         let mut lenses = BTreeMap::new();

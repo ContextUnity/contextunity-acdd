@@ -28,6 +28,19 @@ specs:
     path: docs/plans
     prefixes: [PLAN]
     digits: 3
+  # Optional repository memory + gitignored retrospective subcollection
+  # (disjoint because `ignore` defaults to ["archive", ".*", "README.md", "AGENTS.md", "CLAUDE.md"]):
+  # memories:
+  #   path: docs/memories
+  #   base: memory
+  #   prefixes: [MEM]
+  #   digits: 3
+  # retrospectives:
+  #   path: docs/memories/.retro
+  #   ref: retrospective
+  #   prefixes: [RETRO]
+  #   digits: 3
+  #   roadmap: false
 
 workflows_dirs:
   - .acdd/workflows

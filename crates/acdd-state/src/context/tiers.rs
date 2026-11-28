@@ -16,7 +16,9 @@ use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::format::{estimate_json_bytes, utf8_tail};
 use acdd_core::fs::open_confined;
 use acdd_core::ids::{GateId, NodeCursor};
-use acdd_core::ports::{CompositeDomainProvider, DomainContextReq};
+use acdd_core::ports::{
+    CompositeDomainProvider, ContextRef, ContextScopeMode, DomainContextReq,
+};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use std::fs;
@@ -546,7 +548,8 @@ pub(super) fn apply_tier6_context_lenses(
 
     let optional_target_cap = req.optional_target_cap();
     let mut budget_exhausted = false;
-    for (idx, qualified_lens) in req.gate.context.iter().enumerate() {
+    for (idx, entry) in req.gate.context.iter().enumerate() {
+        let qualified_lens = entry.as_str();
         if budget_exhausted {
             omit_context_lens(
                 resp,
@@ -600,23 +603,23 @@ pub(super) fn apply_tier6_context_lenses(
         } else {
             baseline_ref_for_node(&req.node)
         };
-        let lens_scope = if matches!(qualified_lens.as_str(), "code.symbols" | "code.tests")
-            && !req.node.scope.is_empty()
-        {
+        let ctx_ref = ContextRef::parse(qualified_lens)?;
+        let cap = provider.context_capability(&ctx_ref)?;
+        let scope_mode = cap.map(|c| c.scope_mode).unwrap_or_default();
+        let lens_scope = if scope_mode == ContextScopeMode::NodeOnly && !req.node.scope.is_empty() {
             req.node.scope.clone()
         } else {
             admitted_scope.clone()
         };
-        let lens_globs = if let Some(path_name) = qualified_lens.strip_prefix("paths.") {
-            req.profile.paths.get(path_name).cloned().unwrap_or_default()
-        } else if qualified_lens == "docs.invariants" {
-            req.profile
-                .paths
-                .get("docs")
+        let lens_globs = match &ctx_ref {
+            ContextRef::Paths(path_name) => {
+                req.profile.paths.get(path_name).cloned().unwrap_or_default()
+            }
+            _ => cap
+                .and_then(|c| c.default_paths_key.as_deref())
+                .and_then(|key| req.profile.paths.get(key))
                 .cloned()
-                .unwrap_or_default()
-        } else {
-            Vec::new()
+                .unwrap_or_default(),
         };
         let ctx_req = DomainContextReq {
             run_id: req.run.run_id.clone(),
@@ -631,6 +634,7 @@ pub(super) fn apply_tier6_context_lenses(
             baseline_ref,
             lens_globs,
             citation_text: citation_text.clone(),
+            params: entry.with.clone(),
         };
 
         let val = provider
@@ -671,7 +675,7 @@ pub(super) fn apply_tier6_context_lenses(
         };
         if let Some((accepted_val, accepted_bytes)) = accepted {
             resp.context_lenses
-                .insert(qualified_lens.clone(), accepted_val);
+                .insert(qualified_lens.to_owned(), accepted_val);
             *running_bytes = effective_base + accepted_bytes;
         } else if omit_context_lens(
             resp,

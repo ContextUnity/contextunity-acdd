@@ -1,0 +1,101 @@
+# Reusable Spec schema for structured per-run retrospectives (pair with acdd-workflow-examples/memory_optimize.yaml).
+roadmap: false
+prefixes:
+  - RETRO
+digits: 3
+fields:
+  type: object
+  required:
+    - run_id
+    - outcome
+  additionalProperties: false
+  properties:
+    run_id:
+      type: string
+      minLength: 1
+    outcome:
+      type: string
+      enum: [completed, cleared]
+    blueprint_quality:
+      type: string
+      minLength: 1
+    code_quality:
+      type: string
+      minLength: 1
+items:
+  gate_stats:
+    item: gate_stat
+    fields:
+      type: object
+      required:
+        - gate
+        - attempts
+        - rejections
+        - cycles
+      additionalProperties: false
+      properties:
+        gate:
+          type: string
+          minLength: 1
+        attempts:
+          type: integer
+          minimum: 0
+        rejections:
+          type: integer
+          minimum: 0
+        cycles:
+          type: integer
+          minimum: 0
+        top_reasons:
+          type: array
+          items:
+            type: string
+            minLength: 1
+  problems:
+    item: problem
+    fields:
+      type: object
+      required:
+        - domain
+        - stage
+        - count
+        - summary
+      additionalProperties: false
+      properties:
+        domain:
+          type: string
+          minLength: 1
+        stage:
+          type: string
+          minLength: 1
+        count:
+          type: integer
+          minimum: 1
+        summary:
+          type: string
+          minLength: 1
+        root_cause:
+          type: string
+          minLength: 1
+  tool_usage:
+    item: tool_usage
+    fields:
+      type: object
+      required:
+        - tool
+        - pattern
+        - issue
+      additionalProperties: false
+      properties:
+        tool:
+          type: string
+          minLength: 1
+        pattern:
+          type: string
+          minLength: 1
+        issue:
+          type: string
+          minLength: 1
+        instruction_gap:
+          type: string
+          minLength: 1

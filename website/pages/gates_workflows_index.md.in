@@ -12,7 +12,7 @@
    - Addresses every node via dotted cursors (`blueprint_synthesis.synthesize`, `T1.build`, `T1.review`, `run_tests`, `handoff`).
 3. **Claim & 6-tier `ClaimResp` context**:
    - `acdd_claim` / `acdd claim` locks the node and assembles a budgeted Markdown prompt (`<= 10,000` bytes compact soft cap, `detail="full"` up to `32 KiB`, capped by `ResponsePolicy.max_output_bytes`) in strict tier order:
-   - `contract` & `guidance` → `unresolved_findings` → `pre_task_slice` → `dependency_receipts` → `blackboard` → `context_lenses` (`docs.*`, `code.*`), degrading gracefully via `omitted_sections` with counts (`blackboard (N of M omitted)`) and exact CLI/MCP inspect commands (`acdd blackboard --action read`, `acdd context --detail full`, `acdd show`).
+   - `contract` & `guidance` → `unresolved_findings` → `pre_task_slice` → `dependency_receipts` → `blackboard` → `context_lenses` (`specs.*`, `paths.*`, `docs.*`, `code.*` with 5-tier diff-aware ranking), degrading gracefully via `omitted_sections` with counts (`blackboard (N of M omitted)`) and exact CLI/MCP inspect commands (`acdd blackboard --action read`, `acdd context --detail full`, `acdd show`).
 4. **Verify & submit**:
    - `acdd_verify` / `acdd verify` runs bound shell `commands:` and `DomainProvider` `checks:` (`code.seam`, `code.lint`, `docs.links`, `docs.specs`), recording signed traces.
    - `acdd_submit` / `acdd submit` validates proofs/reviews, checks `independent_from` and `need` invariants, applies `save:` policies (`snapshot`, `commit`, `immutable`, `archive`, `prune`, `report`), and routes to `pass`, `fail`, or `fail_drift`.

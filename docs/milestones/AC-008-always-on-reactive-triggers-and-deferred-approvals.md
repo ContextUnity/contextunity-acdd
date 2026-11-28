@@ -50,7 +50,7 @@ required_skills:
 
 ## Goal & Non-goals
 
-**Goal.** Extend the unified `crates/acdd-state` engine (composing directly with [AC-005](AC-005-unified-swarm-gates-and-peer-board-coordination.md) and [AC-006](AC-006-universal-repository-memory-synthesis.md)) from pull-driven runs into a **zero-daemon, sleep-first reactive core** where parked runs consume `0` tokens and `0` idle RAM, powered by `AgentDef.mode: manual`, subprocess secret scrubbing, claim lease TTLs, SQLite `v3 -> v4` durable `timers`/`inbox`/`outbox`, and a fast one-shot `acdd tick` pulse.
+**Goal.** Extend the unified `crates/acdd-state` engine (composing directly with [AC-005](AC-005-unified-swarm-gates-and-peer-board-coordination.md) and [AC-006](archive/AC-006-universal-repository-memory-synthesis.md)) from pull-driven runs into a **zero-daemon, sleep-first reactive core** where parked runs consume `0` tokens and `0` idle RAM, powered by `AgentDef.mode: manual`, subprocess secret scrubbing, claim lease TTLs, SQLite `v3 -> v4` durable `timers`/`inbox`/`outbox`, and a fast one-shot `acdd tick` pulse.
 
 **Non-goals.**
 - Network webhooks (`POST /events` `--incoming`), authenticated Web UI approvals (`--interactive`), `.acdd/acdd.sock`, Streamable HTTP `acdd mcp --http`, multi-project folder registry, or the long-running `acdd up` supervisor (all deferred to [AC-009](AC-009-authenticated-ingress-interactive-webui-and-http-mcp.md) behind `ADR-0013`).
@@ -238,4 +238,4 @@ status: planned
 
 - **Completeness**: `AC-1`..`AC-5` map 1:1 across Waves 0–3 to `tests/acdd/always_on.rs` and co-evolved ADR/runbook/example deliverables.
 - **Correctness**: Every `AC-*` verifies trigger, idempotent/CAS outcome, fail-closed rejection (`STALE_CLAIM_REVISION`, `ACDD_WORKFLOW_SCHEMA_INVALID`, `BACKEND_CONFLICT`), and seam mutation proof; SQLite migration is sequenced cleanly at `v3 -> v4`.
-- **Coherence**: Reconciles [ADR 0001](../adr/0001-crate-dag-and-layer-boundaries.md), [ADR 0003](../adr/0003-unified-profile-graph-and-state-machine.md), [ADR 0005](../adr/0005-content-addressed-git-snapshots-and-integration.md), [AC-005](AC-005-unified-swarm-gates-and-peer-board-coordination.md), and [AC-006](AC-006-universal-repository-memory-synthesis.md), using unified `AgentDef` naming throughout and strictly sequential zero-overlap waves.
+- **Coherence**: Reconciles [ADR 0001](../adr/0001-crate-dag-and-layer-boundaries.md), [ADR 0003](../adr/0003-unified-profile-graph-and-state-machine.md), [ADR 0005](../adr/0005-content-addressed-git-snapshots-and-integration.md), [AC-005](AC-005-unified-swarm-gates-and-peer-board-coordination.md), and [AC-006](archive/AC-006-universal-repository-memory-synthesis.md), using unified `AgentDef` naming throughout and strictly sequential zero-overlap waves.

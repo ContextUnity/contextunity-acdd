@@ -861,6 +861,7 @@ fn docs_specs_parameterized_required_and_freshness_matrix() {
                 baseline_ref: None,
                 lens_globs: Vec::new(),
                 citation_text: None,
+                params: Value::Null,
             },
         )
         .unwrap();

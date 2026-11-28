@@ -2,7 +2,10 @@ use acdd_core::config::{default_specs, Adapter, LinkedWorkspace};
 use acdd_core::errors::ErrorCode;
 use acdd_core::git::git_command;
 use acdd_core::ids::{NodeCursor, RunId, RunName, TaskRef};
-use acdd_core::ports::{CheckCapability, CompositeDomainProvider, DomainCapabilities};
+use acdd_core::ports::{
+    CheckCapability, CompositeDomainProvider, ContextCapability, ContextScopeMode,
+    DomainCapabilities,
+};
 use acdd_core::response::ResponsePolicy;
 use acdd_core::schema::SchemaDef;
 use acdd_core::subsystems::SubsystemRegistry;
@@ -20,7 +23,7 @@ use acdd_state::usecases::overlay::validate_spec_dependencies;
 use acdd_state::usecases::lifecycle::to_machine_profile;
 use acdd_state::usecases::StateEngineConfig;
 use acdd_state::validate::{validate_document, validate_spec_for_run, validate_workspace};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -41,11 +44,21 @@ fn full_providers() -> CompositeDomainProvider {
                     input_schema: acdd_core::lint::lint_check_input_schema(),
                 },
             ],
-            context_lenses: BTreeSet::from([
-                "symbols".to_owned(),
-                "tests".to_owned(),
-                "external_callers".to_owned(),
-            ]),
+            context: vec![
+                ContextCapability {
+                    name: "symbols".to_owned(),
+                    scope_mode: ContextScopeMode::NodeOnly,
+                    default_paths_key: None,
+                    input_schema: SchemaDef::object(),
+                },
+                ContextCapability {
+                    name: "tests".to_owned(),
+                    scope_mode: ContextScopeMode::NodeOnly,
+                    default_paths_key: None,
+                    input_schema: SchemaDef::object(),
+                },
+                ContextCapability::simple("external_callers"),
+            ],
             ..DomainCapabilities::default()
         },
     );
@@ -62,12 +75,16 @@ fn full_providers() -> CompositeDomainProvider {
                     input_schema: SchemaDef::object(),
                 },
             ],
-            context_lenses: BTreeSet::from([
-                "instructions".to_owned(),
-                "adrs".to_owned(),
-                "invariants".to_owned(),
-                "workspace_config".to_owned(),
-            ]),
+            context: vec![
+                ContextCapability {
+                    name: "invariants".to_owned(),
+                    scope_mode: ContextScopeMode::Admitted,
+                    default_paths_key: Some("docs".to_owned()),
+                    input_schema: SchemaDef::object(),
+                },
+                ContextCapability::simple("workspace_config"),
+            ],
+            supports_collection_context: true,
             ..DomainCapabilities::default()
         },
     );
@@ -681,4 +698,23 @@ fn validate_workspace_config_profile_and_spec_matrix() {
         validate_spec_for_run(&lw_cfg, &harness, &providers, &lw_consumer, &resolved_p)
             .unwrap_err();
     assert_ne!(corrupt_db_err.code, ErrorCode::GateVerificationFailed);
+
+    // (f) Parameterized ContextEntry canonical serialization: empty `with: {}` compacts to string,
+    //     non-empty `with` serializes as canonical `{ context, with }` object.
+    let compact_entry = acdd_state::workflow::ContextEntry {
+        context: "specs.memories".to_owned(),
+        with: serde_json::json!({}),
+    };
+    assert_eq!(
+        serde_json::to_value(&compact_entry).unwrap(),
+        serde_json::json!("specs.memories")
+    );
+    let non_empty_entry = acdd_state::workflow::ContextEntry {
+        context: "http.endpoints".to_owned(),
+        with: serde_json::json!({"url": "https://example.test"}),
+    };
+    assert_eq!(
+        serde_json::to_value(&non_empty_entry).unwrap(),
+        serde_json::json!({"context": "http.endpoints", "with": {"url": "https://example.test"}})
+    );
 }

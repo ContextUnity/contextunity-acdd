@@ -1,9 +1,9 @@
 //! Shared `CodeDomainProvider` struct and helper functions (`code_domain` leaf module).
 
+pub(super) use super::super::common::{collect_git_diff_paths, effective_baseline_ref};
 use acdd_core::config::Adapter;
 use acdd_core::format::sha256_hex;
 use acdd_core::fs::checked_child;
-use acdd_core::git::git_command;
 use acdd_core::path_policy::{expand_glob_braces, normalize_rel_path, WorkspacePathPolicy};
 use acdd_core::response::{Detail, QueryOptions};
 use acdd_index::ast::extract_typed;
@@ -154,47 +154,6 @@ pub(crate) fn for_each_candidate_file(
     }
 }
 
-pub(super) fn collect_git_diff_paths(
-    worktree: &Path,
-    policy: &WorkspacePathPolicy,
-    baseline: &str,
-    diff_filter: &str,
-    predicate: impl Fn(&str) -> bool,
-) -> Vec<String> {
-    if baseline.starts_with('-')
-        || (!worktree.join(".git").exists() && acdd_core::git::git_common_dir(worktree).is_err())
-    {
-        return Vec::new();
-    }
-    let Ok(out) = git_command(
-        worktree,
-        &[
-            "diff",
-            "--name-only",
-            diff_filter,
-            "--no-renames",
-            "-z",
-            baseline,
-            "--",
-        ],
-    ) else {
-        return Vec::new();
-    };
-    if !out.status.success() {
-        return Vec::new();
-    }
-    let mut paths = BTreeSet::new();
-    for raw in out.stdout.split(|b| *b == 0).filter(|b| !b.is_empty()) {
-        let rel = String::from_utf8_lossy(raw);
-        if let Some(norm) = normalize_rel_path(&rel) {
-            if policy.is_candidate_included(&norm) && predicate(&norm) {
-                paths.insert(norm);
-            }
-        }
-    }
-    paths.into_iter().collect()
-}
-
 pub(super) fn collect_deleted_scoped_files(
     worktree: &Path,
     scope: &[String],
@@ -250,13 +209,6 @@ pub(super) fn contains_identifier(text: &str, ident: &str) -> bool {
         before.is_none_or(|c| !c.is_alphanumeric() && c != '_')
             && after.is_none_or(|c| !c.is_alphanumeric() && c != '_')
     })
-}
-
-pub(super) fn effective_baseline_ref(baseline_ref: Option<&str>) -> &str {
-    baseline_ref
-        .map(str::trim)
-        .filter(|s| !s.is_empty() && !s.starts_with('-'))
-        .unwrap_or("HEAD")
 }
 
 pub(super) fn normalize_sig(sig: &str) -> String {

@@ -68,33 +68,40 @@ roles:
   coordinator:
     mode: inline
     reuse_on_reject: true
-    guidance: "Execute inline as the main coordinator agent: synthesize milestone telemetry, cycle history, code quality assessment, and rule updates into gitignored docs/memories/retrospectives/<spec.name>.md before submitting handoff."
+    guidance: "Execute inline as the main coordinator agent: write a strict `retrospectives` Spec (`.acdd/specs/retrospective.yaml`: `gate_stats`, `problems`, `tool_usage`, optional `blueprint_quality`/`code_quality`) to primary repo `<primary_root>/docs/memories/.retro/<workflow>/<spec_or_run>.md` (NOT temporary `.worktrees/<run>/`) before submitting handoff."
 
 guidance:
   repo.rust:
     description: "RUST HOT-PATH & CODEC STANDARDS"
     criteria:
-      - "Model finite variants with closed `enum`s, validated newtypes, `From`/`TryFrom`, `&dyn Trait`, and non-generic inner fns (no mirror `Mcp*` structs or magic strings)."
+      - "Use closed `enum`s, validated newtypes, `From`/`TryFrom`, `&dyn Trait`, and non-generic inner fns (no mirror `Mcp*` structs or magic strings)."
       - "Borrow `&str`/`&Path`/`Cow<'_, str>` and intern repeated symbols (`Arc<str>`, `CompactTag`); hash via `acdd_core::format::sha256_serde_json` and bind codecs with `struct_codecs!`."
-      - "Batch Git/SQLite/spec reads (`git cat-file --batch`, single `ls-tree`, preloaded `BTreeMap`); prove `Ok(None) => slow_path` non-fallbacks and benchmark CLI hot paths (`index`, `query`, `roadmap`, `validate`) on `--release`."
-      - "Run workspace-wide `code_map_impact`/`ast_grep_search` across `archive`/`sync`/`restore`/examples/docs before editing; check adjacent crates/formatters for semantic duplicates and reuse populated DTO fields; split >600-800 LOC files into directory modules; guard UTF-8 slicing (`is_char_boundary`) and fail closed on empty scopes."
-      - "STOP before adding language-name checks in universal `linker/{value_flow,resolution,semantic_context}/` or `db/lint/` modules or writing a parallel walker/parser/lexer when upstream extractor/manifest metadata is missing: extend the canonical owner instead or escalate."
-      - "Route every Spec consumer (`roadmap`, `draft`, `archive`, `verify`, `docs_domain`, `spec_domain`, `docs_lint`) through ONE `acdd-spec` resolver and test all 3 precedence cases (path-inferred, matching `spec:`, cross-directory `spec:` override)."
+      - "Batch Git/SQLite/spec reads (`git cat-file --batch`, single `ls-tree`, preloaded `BTreeMap`); prove `Ok(None) => slow_path` non-fallbacks and benchmark hot paths on `--release`."
+      - "Run `code_map_impact`/`ast_grep_search` across `archive`/`sync`/`restore`/examples/docs before editing; reuse adjacent owners/DTO fields; split >600-800 LOC modules; guard UTF-8 `is_char_boundary` and empty scopes."
+      - "Never add language-name checks in universal `linker/` or `db/lint/` or write parallel walkers/parsers/lexers: extend the canonical upstream owner or escalate."
+      - "Route all Spec consumers through one `acdd-spec` resolver and cover all 3 precedence cases (path-inferred, matching `spec:`, cross-dir `spec:` override)."
+      - "Before submitting `tasks.build`, run `acdd context <node_cursor>` (and `code_map_analyze(mode=\"diff\")`) to re-check `specs.memories` against the live diff."
   repo.tests:
     description: "REPOSITORY TEST BUDGETS"
     criteria:
-      - "NEVER run the full workspace test suite (`cargo test --workspace` or unfiltered `cargo test`) manually during `build`, `review`, or `polish`; execute only scoped seam/module tests (`cargo test {scope_target} <filter>`) and let `acdd verify` own gate verification."
+      - "NEVER run unfiltered `cargo test` / `--workspace` manually during `build`/`review`/`polish`; run scoped `cargo test {scope_target} <filter>` and `acdd verify`."
       - "Keep `RunHarness::in_memory()`/unit tests `< 5 ms`, focused integration tests `< 1 s`, `tests/acdd < 15 s` (`tests/AGENTS.md`, `docs/architecture/test-harness.md`)."
-      - "STOP before writing FS/`temp_dir`/`Workspace` tests inside `crates/**/src/**` `#[cfg(test)]`: add matrix rows to existing canonical integration binaries (`tests/<domain>.rs`)."
+      - "Do not add FS/`temp_dir`/`Workspace` tests in `crates/**/src/**` `#[cfg(test)]`: add matrix rows in canonical `tests/<domain>.rs` binaries."
       - "Set `commit.gpgsign=false` in fixture Git setups and verify zero `/tmp/contextunity-test-*` leaks (`BEFORE == AFTER`)."
   repo.memory_synthesis:
-    description: "PRE-HANDOFF MILESTONE MEMORY & TELEMETRY SYNTHESIS"
+    description: "PRE-HANDOFF RETROSPECTIVE SPEC SYNTHESIS"
     criteria:
-      - "Before submitting `handoff`, analyze the full milestone run using `acdd_state(action: \"show\")` (or `acdd show <run>`), `.acdd/state.sqlite` read-only data (`runs`, `gate_nodes`, `gate_claims`, `gate_traces`, `gate_artifacts`, `blackboard`), `git log --stat <target_base_commit>..HEAD`, and session/subagent usage logs."
-      - "Compile per-task and run-wide statistics: elapsed wall time (run/claim/trace timestamps), token usage per worker/task (when exposed by the harness, or `N/A` when unavailable), loop/cycle counts (`attempt`, `cycle_count`, `build <-> review` rounds, `rearchitect` drift), trace pass/fail counts, scope extensions, and blackboard decisions/deferred counts."
-      - "Write the structured retrospective to `docs/memories/retrospectives/<spec.name>.md` (spec ID/file stem, or `<run_name>.md` for ephemeral `--goal` runs; `/docs/memories/retrospectives/` is gitignored so writing it preserves `claim_tree` with zero extra commits) covering: (1) telemetry table, (2) what went well, (3) what went wrong / friction & bottlenecks, (4) code quality assessment (architecture, SSOT/types, clones/dead_tails, hot-path & test quality), and (5) concrete rule/profile update recommendations (`AGENTS.md`, crate `AGENTS.md`, `skills/`, `.acdd/workflows/default.yaml`, `code.yaml`)."
+      - "Before submitting `handoff`, analyze the live run via `acdd_state(action: \"show\")` (or `acdd show <run>`), `.acdd/state.sqlite` read-only data (`runs`, `gate_nodes`, `gate_claims`, `gate_traces`, `gate_artifacts`, `blackboard`), and `git log --stat <target_base_commit>..HEAD`."
+      - "Write a strict `retrospectives` Spec (`.acdd/specs/retrospective.yaml`) into primary repository `<primary_root>/docs/memories/.retro/<workflow>/<spec_id_or_run_name>.md` (NOT inside the temporary `.worktrees/<run>/` checkout deleted on landing; `/docs/memories/.retro/` is gitignored so `claim_tree` stays untouched): frontmatter `id`, `title`, `spec: retrospectives`, `status: active`, `workflow`, `run_id`, `outcome`, optional `blueprint_quality` and `code_quality`."
+      - "Populate structured items with zero free-form bloat: `### gate_stat: <ref>` (`gate`, `attempts`, `rejections`, `cycles`, optional `top_reasons`), `### problem: <ref>` (`domain`, `stage`, `count`, `summary`, optional `root_cause`), and `### tool_usage: <ref>` (`tool`, `pattern`, `issue`, optional `instruction_gap`)."
 
 gates_patch:
+  - id: blueprint_synthesis.synthesize
+    context:
+      - paths.instructions
+      - paths.adrs
+      - docs.invariants
+      - specs.memories
   - id: tasks.build
     checks:
       - check: code.lint
@@ -107,8 +114,24 @@ gates_patch:
             - dead_tails
             - cycles
     guidance: [task.code, core.execution, code.principles, code.tools, repo.rust, repo.tests, hitl.pro]
+    context:
+      - paths.instructions
+      - paths.adrs
+      - docs.invariants
+      - specs.memories
+      - code.symbols
+      - code.tests
+      - code.external_callers
   - id: tasks.review
     guidance: [task.review, core.review, code.principles, code.tools, repo.rust, repo.tests, hitl.pro]
+    context:
+      - paths.instructions
+      - paths.adrs
+      - docs.invariants
+      - specs.memories
+      - code.symbols
+      - code.tests
+      - code.external_callers
   - id: tasks.rearchitect
     guidance: [task.rearchitect, core.execution, code.principles, code.tools, repo.rust, hitl.pro]
   - id: run_tests
@@ -126,11 +149,37 @@ gates_patch:
   - id: integration_review
     role: integration_reviewer
     guidance: [milestone.review, core.review, code.principles, code.tools, repo.rust, repo.tests, hitl.pro]
+    context:
+      - paths.instructions
+      - paths.adrs
+      - docs.invariants
+      - specs.memories
+      - code.symbols
+      - code.tests
+      - code.external_callers
   - id: polish
+    scope:
+      - ".acdd/workflows/**"
+      - ".acdd/specs/**"
+      - ".acdd/lint/**"
+      - "paths.docs"
+      - "paths.adrs"
+      - "paths.instructions"
+      - "website/**"
+      - "skills/**"
+      - "ROADMAP.md"
+      - "INSTALL.md"
+      - "CHANGELOG.md"
+      - ".gitignore"
     command: polish_check
     checks:
       - check: docs.specs
     guidance: [milestone.polish, core.execution, code.principles, code.tools, repo.rust, repo.tests, hitl.pro]
+    context:
+      - paths.instructions
+      - paths.adrs
+      - docs.invariants
+      - specs.memories
   - id: handoff
     role: coordinator
     guidance: [milestone.handoff, repo.memory_synthesis, core.execution, hitl.pro]

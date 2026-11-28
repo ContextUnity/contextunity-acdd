@@ -334,9 +334,7 @@ pub(crate) fn handle_verify_with_failure_return(
     verify_memory_spec_evidence(
         config,
         backend,
-        run_id,
-        &target_worktree,
-        &pre_changed_paths,
+        &check_req,
         &gate_def,
         &mut check_results,
     )?;
@@ -815,32 +813,45 @@ fn default_log_relpath(node_id: &str, claim_rev: u32) -> String {
     format!("logs/{slug}-rev{claim_rev}.log")
 }
 
-/// Verify that every `evidence` blackboard ID cited in changed `spec: memory` documents
-/// exists in the active run's blackboard via `&dyn StateBackend` (zero direct SQLite access).
+/// Verify that every newly added or modified `evidence` citation in changed `spec: memory`
+/// documents resolves either to an active-run blackboard entry (`#<digits>` / `blackboard#<digits>`)
+/// or to an existing workspace Spec (`<SPEC_ID>` / `<SPEC_ID>#<item_ref>`) or confined file path.
 fn verify_memory_spec_evidence(
     config: &StateEngineConfig,
     backend: &dyn StateBackend,
-    run_id: &acdd_core::ids::RunId,
-    worktree: &std::path::Path,
-    changed_paths: &[String],
+    check_req: &DomainCheckReq,
     gate_def: &GateDef,
     check_results: &mut [CheckResultRecord],
 ) -> Result<(), AcddError> {
+    let run_id = &check_req.run_id;
+    let worktree = &check_req.worktree;
+    let changed_paths = &check_req.changed_paths;
+    let baseline_ref = check_req.baseline_ref.as_deref();
     if changed_paths.is_empty() || !gate_def.checks.iter().any(|c| c.check == "docs.specs") {
         return Ok(());
     }
     let collections = crate::usecases::lifecycle::effective_spec_collections(config);
+    let default_ignore = acdd_core::config::SpecConfig::default();
     let mut cited: Vec<(String, String, String)> = Vec::new();
     for rel in changed_paths {
-        if !rel.ends_with(".md") || rel.starts_with("archive/") || rel.contains("/archive/") {
+        if !rel.ends_with(".md") {
+            continue;
+        }
+        let owning_col =
+            crate::usecases::lifecycle::owning_collection_for(&collections, None, Some(rel));
+        let is_ignored = match owning_col {
+            Some((_, cfg)) => cfg.is_ignored_rel_path(rel),
+            None => rel
+                .split('/')
+                .any(|seg| default_ignore.is_ignored_entry_name(seg)),
+        };
+        if is_ignored {
             continue;
         }
         let Ok(content) = acdd_core::fs::read_confined_utf8(worktree, std::path::Path::new(rel))
         else {
             continue;
         };
-        let owning_col =
-            crate::usecases::lifecycle::owning_collection_for(&collections, None, Some(rel));
         let Ok(doc) = acdd_spec::parse_spec_with_collections(&content, owning_col, &collections)
         else {
             continue;
@@ -858,15 +869,17 @@ fn verify_memory_spec_evidence(
         if !is_memory {
             continue;
         }
-        if let Some(rules) = doc.items.get("rules") {
-            for rule in rules {
-                if let Some(arr) = rule.fields.get("evidence").and_then(|v| v.as_array()) {
-                    for ev in arr {
-                        if let Some(raw) = ev.as_str() {
-                            cited.push((rel.clone(), rule.item_ref.to_string(), raw.to_owned()));
-                        }
-                    }
-                }
+        let baseline_pairs = collect_baseline_memory_evidence_pairs(
+            worktree,
+            baseline_ref,
+            rel,
+            owning_col,
+            &collections,
+        );
+        for (rule_ref, trimmed_ev) in iter_memory_rule_evidence(&doc) {
+            let rule_key = (rule_ref.to_owned(), trimmed_ev.to_owned());
+            if !baseline_pairs.contains(&rule_key) {
+                cited.push((rel.clone(), rule_ref.to_owned(), trimmed_ev.to_owned()));
             }
         }
     }
@@ -874,43 +887,63 @@ fn verify_memory_spec_evidence(
         return Ok(());
     }
 
+    let needs_blackboard = cited.iter().any(|(_, _, raw)| is_numeric_or_hash_citation(raw.trim()));
+    let needs_specs = cited.iter().any(|(_, _, raw)| !is_numeric_or_hash_citation(raw.trim()));
+
     let mut known_ids = std::collections::HashSet::new();
-    let mut offset = 0usize;
-    loop {
-        let page = backend.list_blackboard(
-            run_id,
-            &crate::types::BlackboardListReq {
-                node_id: None,
-                recipient_node_id: None,
-                topic: None,
-                status: None,
-                limit: 100,
-                offset,
-                generation: None,
-            },
-        )?;
-        for item in &page.items {
-            if let Some(id) = item.id {
-                known_ids.insert(id);
+    if needs_blackboard {
+        let mut offset = 0usize;
+        loop {
+            let page = backend.list_blackboard(
+                run_id,
+                &crate::types::BlackboardListReq {
+                    node_id: None,
+                    recipient_node_id: None,
+                    topic: None,
+                    status: None,
+                    limit: 100,
+                    offset,
+                    generation: None,
+                },
+            )?;
+            for item in &page.items {
+                if let Some(id) = item.id {
+                    known_ids.insert(id);
+                }
+            }
+            offset += page.items.len();
+            if offset >= page.total || page.items.is_empty() {
+                break;
             }
         }
-        offset += page.items.len();
-        if offset >= page.total || page.items.is_empty() {
-            break;
-        }
     }
+
+    let specs_by_id = if needs_specs {
+        preload_workspace_spec_items(&check_req.workspace_root, worktree, &collections)
+    } else {
+        std::collections::BTreeMap::new()
+    };
 
     let mut diagnostics = Vec::new();
     for (rel, rule_id, raw) in cited {
         let trimmed = raw.trim();
-        let digits = trimmed.strip_prefix('#').unwrap_or(trimmed);
-        let parsed = (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
-            .then(|| digits.parse::<i64>().ok())
-            .flatten()
-            .filter(|id| *id > 0);
-        if !parsed.is_some_and(|id| known_ids.contains(&id)) {
+        let valid = if trimmed.is_empty() {
+            false
+        } else if is_numeric_or_hash_citation(trimmed) {
+            let digits = trimmed
+                .strip_prefix("blackboard#")
+                .or_else(|| trimmed.strip_prefix('#'))
+                .unwrap_or(trimmed);
+            (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+                .then(|| digits.parse::<i64>().ok())
+                .flatten()
+                .is_some_and(|id| id > 0 && known_ids.contains(&id))
+        } else {
+            is_valid_workspace_spec_or_path_citation(worktree, trimmed, &specs_by_id)
+        };
+        if !valid {
             diagnostics.push(format!(
-                "[MEMORY_EVIDENCE_UNKNOWN] {rel}: rule '{rule_id}' cites blackboard evidence '{raw}' which does not exist in run '{run_id}'"
+                "[MEMORY_EVIDENCE_UNKNOWN] {rel}: rule '{rule_id}' cites unresolved evidence '{raw}' in run '{run_id}'"
             ));
         }
     }
@@ -920,7 +953,7 @@ fn verify_memory_spec_evidence(
             .find(|r| r.domain == "docs" && r.check == "specs")
         {
             let mem_summary = format!(
-                "MEMORY_EVIDENCE_UNKNOWN: {} unresolved memory blackboard evidence citation(s)",
+                "MEMORY_EVIDENCE_UNKNOWN: {} unresolved memory evidence citation(s)",
                 diagnostics.len()
             );
             if rec.passed {
@@ -934,4 +967,119 @@ fn verify_memory_spec_evidence(
         }
     }
     Ok(())
+}
+
+fn iter_memory_rule_evidence(doc: &acdd_spec::SpecDocument) -> Vec<(&str, &str)> {
+    let mut out = Vec::new();
+    if let Some(rules) = doc.items.get("rules") {
+        for rule in rules {
+            if let Some(arr) = rule.fields.get("evidence").and_then(|v| v.as_array()) {
+                for ev in arr {
+                    if let Some(raw) = ev.as_str() {
+                        out.push((rule.item_ref.as_str(), raw.trim()));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn collect_baseline_memory_evidence_pairs(
+    worktree: &std::path::Path,
+    baseline_ref: Option<&str>,
+    rel: &str,
+    owning_col: Option<(&str, &acdd_core::config::SpecConfig)>,
+    collections: &std::collections::BTreeMap<String, acdd_core::config::SpecConfig>,
+) -> std::collections::BTreeSet<(String, String)> {
+    let mut pairs = std::collections::BTreeSet::new();
+    let git_ref = baseline_ref.unwrap_or("HEAD");
+    let Ok(Some(base_raw)) = acdd_core::git::read_git_blob_utf8(worktree, git_ref, rel) else {
+        return pairs;
+    };
+    let Ok(base_doc) = acdd_spec::parse_spec_with_collections(&base_raw, owning_col, collections)
+    else {
+        return pairs;
+    };
+    for (rule_ref, trimmed_ev) in iter_memory_rule_evidence(&base_doc) {
+        pairs.insert((rule_ref.to_owned(), trimmed_ev.to_owned()));
+    }
+    pairs
+}
+
+fn is_numeric_or_hash_citation(trimmed: &str) -> bool {
+    trimmed.starts_with('#')
+        || trimmed.starts_with("blackboard#")
+        || trimmed.starts_with('+')
+        || trimmed.starts_with('-')
+        || (!trimmed.is_empty() && trimmed.bytes().all(|b| b.is_ascii_digit()))
+}
+
+fn preload_workspace_spec_items(
+    workspace_root: &std::path::Path,
+    worktree: &std::path::Path,
+    collections: &std::collections::BTreeMap<String, acdd_core::config::SpecConfig>,
+) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
+    let mut specs_by_id: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+        std::collections::BTreeMap::new();
+    let active_scan = acdd_spec::discovery::collect_workspace_specs(worktree, collections);
+    for item in active_scan.specs {
+        let entry = specs_by_id.entry(item.doc.id.clone()).or_default();
+        entry.extend(item.doc.all_item_refs().into_iter().map(str::to_owned));
+    }
+    if acdd_core::fs::canonicalize_macos_var(workspace_root)
+        != acdd_core::fs::canonicalize_macos_var(worktree)
+    {
+        let ignored = acdd_core::git::collect_gitignored_untracked_files(workspace_root);
+        if !ignored.is_empty() {
+            let primary_scan =
+                acdd_spec::discovery::collect_workspace_specs(workspace_root, collections);
+            for item in primary_scan.specs {
+                if ignored.contains(&item.rel_path) {
+                    let entry = specs_by_id.entry(item.doc.id.clone()).or_default();
+                    entry.extend(item.doc.all_item_refs().into_iter().map(str::to_owned));
+                }
+            }
+        }
+    }
+    if let Ok((archived, _)) =
+        acdd_spec::discovery::collect_archived_specs(worktree, collections, false, None)
+    {
+        for (_, _, doc) in archived {
+            let entry = specs_by_id.entry(doc.id.clone()).or_default();
+            entry.extend(doc.all_item_refs().into_iter().map(str::to_owned));
+        }
+    }
+    specs_by_id
+}
+
+fn is_valid_workspace_spec_or_path_citation(
+    worktree: &std::path::Path,
+    trimmed: &str,
+    specs_by_id: &std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+) -> bool {
+    let file_part = match trimmed.split_once('#') {
+        Some((spec_id, item_ref)) => {
+            if spec_id.is_empty() || item_ref.is_empty() {
+                return false;
+            }
+            if specs_by_id
+                .get(spec_id)
+                .is_some_and(|items| items.contains(item_ref))
+            {
+                return true;
+            }
+            spec_id
+        }
+        None => {
+            if specs_by_id.contains_key(trimmed) {
+                return true;
+            }
+            trimmed
+        }
+    };
+    !file_part.contains('\\')
+        && acdd_core::fs::is_normalized_relative(std::path::Path::new(file_part))
+        && acdd_core::fs::checked_child(worktree, std::path::Path::new(file_part))
+            .is_ok_and(|abs| std::fs::symlink_metadata(&abs).is_ok_and(|m| m.file_type().is_file()))
 }

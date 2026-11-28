@@ -4,7 +4,7 @@ Every `WorkflowDef` YAML file uses strict `deny_unknown_fields` validation and i
 
 - **Default workspace file**: `.acdd/workflows/default.yaml` (falls back to embedded `code` when absent).
 - **Custom workflows folder**: `.acdd/workflows/<name>.yaml` (configured via `workflows_dirs:` in `acdd.yaml`).
-- **Embedded workflows vs. reference templates**: 3 core workflows (`base`, `code`, `documentation`) are embedded in the binary; `audit`, `spec_planning`, and `hotfix` live in `skills/acdd/references/acdd-workflow-examples/`.
+- **Embedded workflows vs. reference templates**: 3 core workflows (`base`, `code`, `documentation`) are embedded in the binary; `audit`, `spec_planning`, `hotfix`, and `memory_optimize` live in `skills/acdd/references/acdd-workflow-examples/`.
 
 ---
 
@@ -148,13 +148,13 @@ Each key under `commands:` accepts one of four forms (or `null` to clear an inhe
 | `command` | Command gate | Key from `commands:` executed during `acdd verify` / `acdd run`. |
 | `call` / `with` | Action gate | Runs `<domain>.<action>` on a `DomainProvider` with JSON `with: { ... }` payload. |
 | `checks` | Any verified gate | List of `"<domain>.<check>"` or `{ check, with }` (`code.seam`, `code.lint`, `docs.links`, `docs.specs`). |
-| `context` | Role gate | Ordered list of `DomainProvider` lenses injected into `ClaimResp` Tier 6. |
+| `context` | Role gate | Ordered list of `DomainProvider` lenses (`"<ref>"` or `{ context: "<ref>", with?: { ... } }`) injected into `ClaimResp` Tier 6 with 5-tier diff-aware ranking. |
 | `tools` | Role gate | Replaces `default_tools` for this gate (also supports `tools_add` / `tools_remove`). |
 | `guidance` | Any gate | Keys from `guidance:` or `{ inline: "..." }` blocks injected into `ClaimResp.guidance`. |
 | `contours` | Review gate | List of `contours:` keys audited by `independent_reviewer`. |
-| `scope` | Explicit gate | List of workspace-relative globs (e.g. `polish` admitting `docs/**`, `README.md`). |
+| `scope` | Explicit gate | List of workspace-relative globs (e.g. `polish` admitting `paths.docs`, `paths.adrs`, `paths.instructions`). |
 
-- **Available `context:` lenses**: `paths.instructions`, `paths.adrs`, `paths.<name>`, `specs.<collection>`, `docs.invariants`, `docs.workspace_config`, `code.symbols`, `code.tests`, `code.external_callers`.
+- **Available `context:` lenses**: `paths.instructions`, `paths.adrs`, `paths.<name>`, `specs.<collection|base>` (e.g. `specs.memories`, `specs.memory`), `docs.invariants`, `docs.workspace_config`, `code.symbols`, `code.tests`, `code.external_callers`.
 
 ### 5.3 Proofs, dependencies & persistence
 

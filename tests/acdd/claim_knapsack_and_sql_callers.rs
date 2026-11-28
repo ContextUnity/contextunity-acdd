@@ -3,8 +3,8 @@ use acdd_core::errors::ErrorCode;
 use acdd_core::ids::{CommitOid, RunId, RunName, TaskRef, TreeOid, WorkerId};
 use acdd_core::path_policy::WorkspacePathPolicy;
 use acdd_core::ports::{
-    CompositeDomainProvider, DomainActionReq, DomainActionResult, DomainCapabilities,
-    DomainCheckOutcome, DomainCheckReq, DomainContextReq, DomainProvider,
+    CompositeDomainProvider, ContextCapability, DomainActionReq, DomainActionResult,
+    DomainCapabilities, DomainCheckOutcome, DomainCheckReq, DomainContextReq, DomainProvider,
 };
 use acdd_core::response::{pack_knapsack_indices, KnapsackItem};
 use acdd_state::context::{ClaimContextRequest, GateContextAssembler};
@@ -35,7 +35,11 @@ impl DomainProvider for StaticLensProvider {
 
     fn capabilities(&self) -> DomainCapabilities {
         DomainCapabilities {
-            context_lenses: self.lenses.keys().cloned().collect(),
+            context: self
+                .lenses
+                .keys()
+                .map(|k| ContextCapability::simple(k.clone()))
+                .collect(),
             ..DomainCapabilities::default()
         }
     }
@@ -97,7 +101,7 @@ fn sample_claim_request(
     gate.id = "build".to_owned();
     gate.role = Some("builder".to_owned());
     gate.guidance = vec![GateGuidanceRef::Slot("g1".to_owned())];
-    gate.context = context;
+    gate.context = context.into_iter().map(Into::into).collect();
     let ws = workspace.to_string_lossy().into_owned();
     let run = RunRecord {
         run_id: run_id.clone(),

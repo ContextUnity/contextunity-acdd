@@ -256,7 +256,7 @@ gate_templates:
       - id: synthesize
         role: builder
         scope:
-          - specs.memories
+          - specs.memory
         checks:
           - docs.specs
         guidance:
@@ -420,14 +420,10 @@ gates:
       - ".acdd/workflows/**"
       - ".acdd/specs/**"
       - ".acdd/lint/**"
-      - "docs/**"
-      - "website/**"
-      - "skills/**"
-      - "AGENTS.md"
+      - "paths.docs"
+      - "paths.adrs"
+      - "paths.instructions"
       - "CHANGELOG.md"
-      - "README.md"
-      - "ROADMAP.md"
-      - "TESTS.md"
       - ".gitignore"
     command: verify_all
     proof: command

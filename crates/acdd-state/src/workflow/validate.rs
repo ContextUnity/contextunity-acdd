@@ -1,7 +1,7 @@
 //! Fail-closed `ResolvedWorkflow` validation, command pattern selection, and guidance budgeting.
 
 use super::schema::{
-    CommandDef, DetailedCommandDef, GateDef, GateGuidanceRef, ProofDef, ProofKind,
+    CommandDef, ContextEntry, DetailedCommandDef, GateDef, GateGuidanceRef, ProofDef, ProofKind,
     ResolvedWorkflow, ResourceLimits, TestFilterConfig,
 };
 use super::shell_template::{glob_specificity, validate_shell_template_placeholders};
@@ -13,7 +13,7 @@ use acdd_core::ids::{GateId, GateSelector};
 use acdd_core::path_policy::{
     is_valid_scope_glob, normalize_rel_path, should_skip_walk_dir, WorkspacePathPolicy,
 };
-use acdd_core::ports::{is_builtin_mcp_tool, CompositeDomainProvider};
+use acdd_core::ports::{is_builtin_mcp_tool, CompositeDomainProvider, ContextRef};
 use acdd_core::subsystems::SubsystemRegistry;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -670,8 +670,8 @@ fn validate_single_gate(
         providers.validate_check_ref(&chk.check, &chk.with)?;
     }
 
-    for lens in &gate.context {
-        validate_gate_context_lens(lens, profile, opts, &ctx)?;
+    for entry in &gate.context {
+        validate_gate_context_entry(entry, profile, opts, &ctx)?;
     }
 
     validate_gate_scope(gate, profile, opts, &ctx)?;
@@ -738,7 +738,7 @@ fn validate_named_spec_ref<'a>(
     effective_specs: &'a BTreeMap<String, SpecConfig>,
     ctx: &str,
     field: &str,
-) -> Result<&'a SpecConfig, AcddError> {
+) -> Result<Vec<(&'a String, &'a SpecConfig)>, AcddError> {
     let name = raw.strip_prefix("specs.").unwrap_or("");
     if name.is_empty() {
         return Err(AcddError::new(
@@ -746,16 +746,18 @@ fn validate_named_spec_ref<'a>(
             format!("{ctx}: {field} entry '{raw}' must name a registered spec (e.g. 'specs.memories')"),
         ));
     }
-    effective_specs.get(name).ok_or_else(|| {
+    let matched = acdd_spec::matching_spec_collections(effective_specs, name);
+    if matched.is_empty() {
         let available: Vec<&str> = effective_specs.keys().map(String::as_str).collect();
-        AcddError::new(
+        return Err(AcddError::new(
             ErrorCode::WorkflowSchemaInvalid,
             format!("{ctx}: unknown spec reference '{raw}' in {field}"),
         )
         .with_hint(format!(
             "Register 'specs.{name}' in acdd.yaml (registered specs: {available:?})"
-        ))
-    })
+        )));
+    }
+    Ok(matched)
 }
 
 fn validate_named_path_ref<'a>(
@@ -783,12 +785,13 @@ fn validate_named_path_ref<'a>(
     })
 }
 
-fn validate_gate_context_lens(
-    lens: &str,
+fn validate_gate_context_entry(
+    entry: &ContextEntry,
     profile: &ResolvedWorkflow,
     opts: &WorkflowValidationOptions<'_>,
     ctx: &str,
 ) -> Result<(), AcddError> {
+    let lens = entry.as_str();
     reject_legacy_lens_or_scope(lens, ctx, "context:")?;
     let empty_providers = CompositeDomainProvider::default();
     let providers = opts.domain_providers.unwrap_or(&empty_providers);
@@ -796,20 +799,27 @@ fn validate_gate_context_lens(
     let effective_specs =
         acdd_spec::effective_spec_collections(opts.spec_collections.unwrap_or(&empty_specs));
 
-    if lens.starts_with("paths.") {
-        let _ = validate_named_path_ref(lens, profile, ctx, "context:")?;
-        ensure_domain_enabled("docs", &profile.modules, opts.acdd_modules, ctx)?;
-        return providers.validate_context_lens(lens);
+    let ctx_ref = ContextRef::parse(lens)?;
+    match &ctx_ref {
+        ContextRef::Paths(_) => {
+            let _ = validate_named_path_ref(lens, profile, ctx, "context:")?;
+            if let Some(col_domain) = providers.collection_context_domain() {
+                ensure_domain_enabled(col_domain, &profile.modules, opts.acdd_modules, ctx)?;
+            }
+            providers.validate_context_ref(&ctx_ref, &entry.with)
+        }
+        ContextRef::Specs(_) => {
+            let _ = validate_named_spec_ref(lens, &effective_specs, ctx, "context:")?;
+            if let Some(col_domain) = providers.collection_context_domain() {
+                ensure_domain_enabled(col_domain, &profile.modules, opts.acdd_modules, ctx)?;
+            }
+            providers.validate_context_ref(&ctx_ref, &entry.with)
+        }
+        ContextRef::Domain { domain, .. } => {
+            ensure_domain_enabled(domain, &profile.modules, opts.acdd_modules, ctx)?;
+            providers.validate_context_ref(&ctx_ref, &entry.with)
+        }
     }
-    if lens.starts_with("specs.") {
-        let _ = validate_named_spec_ref(lens, &effective_specs, ctx, "context:")?;
-        ensure_domain_enabled("docs", &profile.modules, opts.acdd_modules, ctx)?;
-        return providers.validate_context_lens(lens);
-    }
-
-    let domain = lens.split('.').next().unwrap_or("");
-    ensure_domain_enabled(domain, &profile.modules, opts.acdd_modules, ctx)?;
-    providers.validate_context_lens(lens)
 }
 
 fn validate_gate_scope(
@@ -827,8 +837,8 @@ fn validate_gate_scope(
     for pat in &gate.scope {
         reject_legacy_lens_or_scope(pat, ctx, "scope:")?;
         if pat.starts_with("specs.") {
-            let col = validate_named_spec_ref(pat, &effective_specs, ctx, "scope:")?;
-            let patterns = col.patterns();
+            let cols = validate_named_spec_ref(pat, &effective_specs, ctx, "scope:")?;
+            let patterns: Vec<&str> = cols.into_iter().flat_map(|(_, col)| col.patterns()).collect();
             if patterns.is_empty() || patterns.iter().any(|p| !is_valid_scope_glob(p)) {
                 return Err(AcddError::new(
                     ErrorCode::WorkflowSchemaInvalid,
@@ -859,11 +869,20 @@ fn collect_referenced_spec_lenses(
     out: &mut BTreeMap<String, Vec<String>>,
 ) {
     for gate in gates {
-        for entry in gate.scope.iter().chain(&gate.context) {
+        for entry in gate
+            .scope
+            .iter()
+            .map(String::as_str)
+            .chain(gate.context.iter().map(ContextEntry::as_str))
+        {
             if let Some(name) = entry.strip_prefix("specs.") {
-                if let Some(col) = spec_collections.get(name) {
-                    out.entry(entry.clone())
-                        .or_insert_with(|| col.patterns().into_iter().map(str::to_owned).collect());
+                let cols = acdd_spec::matching_spec_collections(spec_collections, name);
+                if !cols.is_empty() {
+                    out.entry(entry.to_owned()).or_insert_with(|| {
+                        cols.into_iter()
+                            .flat_map(|(_, col)| col.patterns().into_iter().map(str::to_owned))
+                            .collect()
+                    });
                 }
             }
         }

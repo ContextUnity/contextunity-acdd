@@ -1,0 +1,100 @@
+version: 2
+# Standalone workflow for consolidating raw retrospectives (`docs/memories/.retro/<workflow>/`)
+# into domain-grouped repository memory (`docs/memories/<domain>.md`) and refining instructions/skills.
+inherit: base
+
+git:
+  isolation: worktree
+  worktrees: manual
+
+save: commit
+
+tags:
+  - default
+  - docs
+
+roles:
+  consolidator:
+    mode: subagent
+  independent_reviewer:
+    mode: subagent
+
+guidance:
+  memory.consolidate:
+    description: "CONSOLIDATE RETROSPECTIVES INTO DOMAIN MEMORY & INSTRUCTIONS"
+    criteria:
+      - "Inspect every unprocessed retrospective under `<primary_root>/docs/memories/.retro/*/` (excluding `.processed/`; surfaced via `specs.retrospectives` even in isolated worktrees). Group recurring problems by domain, stage, frequency, and tool-usage gaps."
+      - "Update or create domain-grouped `memory` Spec files directly under `docs/memories/<domain>.md` (keep `instructions-and-skills.md` scoped to `AGENTS.md`, `**/AGENTS.md`, and `skills/**` so prior instruction lessons are never dropped during edits). Add optional `symbols:` only when a rule targets specific code declarations."
+      - "Move retired or superseded memory files to `docs/memories/archive/`. Propose targeted, concise refinements to `AGENTS.md`, subtree `AGENTS.md`, or skills only when evidence shows repeated friction across runs, preserving strict separation between project rules and reusable skills."
+      - "Run `acdd validate` (and `docs.specs`) so every active memory file validates cleanly before submitting."
+  memory.review:
+    description: "INDEPENDENT REVIEW OF MEMORY CONSOLIDATION & INSTRUCTION UPDATES"
+    criteria:
+      - "Verify every consolidated rule cites concrete retrospective evidence, stays concise, and preserves prior lessons without silent deletion or weakening."
+      - "Verify strict domain separation: no repository-specific internals leaked into reusable shared skills."
+      - "Verify `docs.specs` passes and no raw `.retro/` files are staged in Git."
+  memory.finalize:
+    description: "FINALIZE CONSOLIDATION & MARK RETROSPECTIVES PROCESSED"
+    criteria:
+      - "After independent review passes, move each consolidated retrospective from `<primary_root>/docs/memories/.retro/<workflow>/<file>.md` to `<primary_root>/docs/memories/.retro/<workflow>/.processed/<file>.md` (gitignored in primary root, so `claim_tree` stays untouched), then submit `finalize` to commit and prune the run."
+
+gates:
+  - id: consolidate
+    role: consolidator
+    scope:
+      - "docs/memories/**"
+      - "AGENTS.md"
+      - "**/AGENTS.md"
+      - "skills/**"
+    checks:
+      - docs.specs
+    guidance:
+      - memory.consolidate
+      - core.execution
+      - hitl.pro
+    context:
+      - paths.instructions
+      - specs.retrospectives
+      - specs.memories
+    pass: review
+
+  - id: review
+    role: independent_reviewer
+    proof: review
+    contours:
+      - paths
+      - claims
+      - administration
+    independent_from:
+      - consolidate
+    need:
+      - consolidate
+    guidance:
+      - memory.review
+      - core.review
+      - hitl.pro
+    context:
+      - paths.instructions
+      - specs.retrospectives
+      - specs.memories
+    save:
+      immutable: true
+    pass: finalize
+    fail: consolidate
+
+  - id: finalize
+    role: independent_reviewer
+    independent_from:
+      - consolidate
+    need:
+      - consolidate
+      - review
+    receipt: true
+    guidance:
+      - memory.finalize
+      - hitl.pro
+    save:
+      immutable: true
+      post: commit
+      prune: true
+    fail: consolidate

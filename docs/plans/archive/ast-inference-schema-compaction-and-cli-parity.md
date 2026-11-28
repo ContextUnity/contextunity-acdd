@@ -2,7 +2,7 @@
 id: plan-hotfix-ast-schema-cli-ergonomics
 title: "Hotfix Plan: AST Inference/Captures, MCP Schema Compaction, Cross-Tool Dispatch Hints & CLI Parity"
 doc_type: plan
-status: active
+status: completed
 owners:
   - crates/acdd-index/src/ast/search.rs
   - src/engine/ast.rs

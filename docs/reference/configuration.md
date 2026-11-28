@@ -60,13 +60,14 @@ linked_workspaces:
 
 ### Specification configurations (`specs:`, `specs_dirs:`)
 
-`specs:` (`SpecConfig`) defines named collections for Git-tracked Markdown specifications (`milestones` and `plans` by default, plus optional `memories` or custom schemas):
+`specs:` (`SpecConfig`) defines named collections for Git-tracked (or gitignored) Markdown specifications (`milestones` and `plans` by default, plus optional `memories` or declarative custom schemas such as `retrospectives`):
 
-- **`path` / `paths`**: normalized relative directory (or confined globs) that must not overlap across configurations.
-- **`base`**: optional single-hop built-in base (`contract` default, or `memory`).
-- **`ref`**: optional external spec schema file resolved from `specs_dirs:` (default `[".acdd/specs"]`) via the shared confined `<name> | <path>[:<sha256_prefix>]` resolver.
+- **`path` / `paths`**: normalized relative directory (or confined globs). Unignored overlaps across configurations fail closed; a child collection inside an ignored subdirectory of a parent collection (for example `docs/memories/.retro` under `docs/memories`) is allowed because their active file sets are disjoint.
+- **`ignore`**: optional list of excluded directory/file entry names; defaults to `["archive", ".*", "README.md", "AGENTS.md", "CLAUDE.md"]`. Honored uniformly by `acdd-spec` discovery and `DocsDomainProvider` lenses.
+- **`base`**: optional single-hop built-in base (`contract` default, or `memory`). Rules in `memory` specs support an optional `symbols: [...]` list alongside `scope:` for hunk-exact diff-aware ranking.
+- **`ref`**: optional external spec schema file resolved from `specs_dirs:` (default `[".acdd/specs"]`) via the shared confined `<name> | <path>[:<sha256_prefix>]` resolver (for example `ref: retrospective` pointing to `.acdd/specs/retrospective.yaml`).
 - **`fields` / `items`**: optional `SchemaDef` validation for Spec frontmatter and named `### <item>: <ref>` collections.
-- **`prefixes`**: allowed ID prefixes for files in that configuration (e.g. `[AC]`, `[PLAN]`).
+- **`prefixes`**: allowed ID prefixes for files in that configuration (e.g. `[AC]`, `[PLAN]`, `[RETRO]`).
 - **`digits`**: numeric ID zero-padding width (`1..=16`, default `3`, producing `AC-001-...md`).
 - **`workflow`**: optional default `WorkflowDef` name or path applied when starting specs from this configuration (unknown or removed keys fail closed via `#[serde(deny_unknown_fields)]`).
 - **`roadmap`**: boolean (`true` by default on `contract`, `false` on `memory`) controlling default inclusion in `acdd roadmap`.

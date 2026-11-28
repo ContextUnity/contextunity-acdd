@@ -98,7 +98,7 @@ Inside `gates_patch`:
 - `use`: expand named template from `gate_templates`.
 - `role`, `command`, `call` (`"<domain>.<action>"`), `with` (JSON arguments for `call`).
 - `checks`: list of `"<domain>.<check>"` or `{ check, with? }` (e.g. `code.seam`, `code.lint`, `code.signature_scope`, `docs.links`, `docs.specs`, `spec.deltas_applied`).
-- `context`: list of domain context lenses (e.g. `specs.memories`, `paths.instructions`, `paths.adrs`, `docs.invariants`, `code.symbols`, `code.tests`, `code.external_callers`).
+- `context`: list of domain context lenses as string shorthand (`"<ref>"`) or parameterized object (`{ context: "<ref>", with?: { ... } }`), e.g. `specs.memories`, `specs.memory` (base-agnostic), `paths.instructions`, `paths.adrs`, `docs.invariants`, `code.symbols`, `code.tests`, `code.external_callers`.
 - `proof`: `none` (default) | `command` | `call` | `review` (requires `role` + non-empty `contours`) | `<catalog_id>` | `{ scheme: <JSON Schema> }`.
 - `tools` / `tools_add` / `tools_remove`: replace or adjust `default_tools` (validated fail-closed against static + registered `DomainProvider` plugin tools).
 - `guidance`, `contours`, `scope` (`[<glob>, ...]` explicit gate scope e.g. `polish`).

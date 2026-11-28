@@ -17,6 +17,7 @@ use anyhow::Result;
 use rusqlite::Connection;
 use serde_json::{json, Value};
 
+pub use change_impact::collect_changed_symbol_seeds;
 pub(crate) use dead_tails::dead_tails_paged;
 pub use duplicates::duplicates_paged;
 use impact::traverse_with_path_options;

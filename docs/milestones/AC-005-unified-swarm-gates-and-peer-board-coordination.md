@@ -58,10 +58,10 @@ required_skills:
 
 ## Goal & Non-goals
 
-**Goal.** Make `WorkflowDef` (`version: 2`) in `crates/acdd-state` completely uniform for `v0.8.0` (building on [AC-006](AC-006-universal-repository-memory-synthesis.md) universal `spec.<collection>` items and named `paths.*` sets) by replacing special-cased `- tasks:` (`TasksBlock`) machinery with one orthogonal execution model (`mode: linear | parallel | swarm`), multi-source `GateDef.with` coalescing, extended native `GateDef.when` predicates, grouped `save:` variants (`save: handoff`), `roles -> agents` naming, and direct `@mention` + zero-token `wait` coordination on `acdd_blackboard` under [ADR 0003](../adr/0003-unified-profile-graph-and-state-machine.md) and [ADR 0004](../adr/0004-domain-provider-spi-and-plugin-tools.md).
+**Goal.** Make `WorkflowDef` (`version: 2`) in `crates/acdd-state` completely uniform for `v0.8.0` (building on [AC-006](archive/AC-006-universal-repository-memory-synthesis.md) universal `spec.<collection>` items and named `paths.*` sets) by replacing special-cased `- tasks:` (`TasksBlock`) machinery with one orthogonal execution model (`mode: linear | parallel | swarm`), multi-source `GateDef.with` coalescing, extended native `GateDef.when` predicates, grouped `save:` variants (`save: handoff`), `roles -> agents` naming, and direct `@mention` + zero-token `wait` coordination on `acdd_blackboard` under [ADR 0003](../adr/0003-unified-profile-graph-and-state-machine.md) and [ADR 0004](../adr/0004-domain-provider-spi-and-plugin-tools.md).
 
 **Non-goals.**
-- Universal Spec schema parsing, `paths:` resolution, and `spec_deltas` (owned by [AC-006](AC-006-universal-repository-memory-synthesis.md)).
+- Universal Spec schema parsing, `paths:` resolution, and `spec_deltas` (owned by [AC-006](archive/AC-006-universal-repository-memory-synthesis.md)).
 - HTTP/SSE Web UI, Prometheus `/metrics`, or OTLP export (owned by [AC-007](AC-007-unified-observability-board-otlp-and-metrics.md)).
 - Deferred `AgentDef.mode: manual` approvals, claim lease TTLs, SQLite `timers`, `acdd tick`, `inbox`, or `outbox` (owned by [AC-008](AC-008-always-on-reactive-triggers-and-deferred-approvals.md)).
 - Authenticated network/IPC ingress, multi-project hub, or Streamable HTTP MCP (owned by [AC-009](AC-009-authenticated-ingress-interactive-webui-and-http-mcp.md)).
@@ -71,7 +71,7 @@ required_skills:
 
 ### 1. Unified 5-milestone system architecture (`AC-006` → `AC-005` → `AC-007` + `AC-008` → `AC-009`)
 
-1. **[AC-006](AC-006-universal-repository-memory-synthesis.md)** (`v0.8.0`): Universal `specs:` schemas (`spec.<collection>`), named `paths.*` sets, `spec_deltas`, and `memory` Specs.
+1. **[AC-006](archive/AC-006-universal-repository-memory-synthesis.md)** (`v0.8.0`): Universal `specs:` schemas (`spec.<collection>`), named `paths.*` sets, `spec_deltas`, and `memory` Specs.
 2. **`AC-005`** (`v0.8.0`, this milestone): Uniform `mode: linear | parallel | swarm` gates, `GateDef.with` coalescing, extended `when:`, `agents:` + grouped `save: handoff`, lock-free `save: none` CAS, and `@mention` + zero-token `wait`.
 3. **[AC-007](AC-007-unified-observability-board-otlp-and-metrics.md)**: `acdd mcp` split and single-workspace read-only `acdd serve` (Live Gate Board, Architecture Map, Specs/Roadmap/Docs, task-scoped Diff, Prometheus, OTLP).
 4. **[AC-008](AC-008-always-on-reactive-triggers-and-deferred-approvals.md)**: Zero-daemon reactive core (`AgentDef.mode: manual`, lease TTLs, `timers`, `acdd tick`, `inbox`, `outbox`, secret scrubbing).
@@ -367,4 +367,4 @@ subtasks:
 
 - **Completeness**: `AC-1`..`AC-6` map 1:1 across Waves 0–4 (`tests/acdd/swarm.rs`, `tests/commitment_integrity/state_boundaries.rs`, docs/examples, and operator sign-off).
 - **Correctness**: Every `AC-*` names trigger, expected behavior, fail-closed error (`ACDD_WORKFLOW_SCHEMA_INVALID`, `TASK_SCOPE_CONFLICT`, `BACKEND_CONFLICT`), and seam mutation proof; SQLite migration aligns to live `v2 -> v3`.
-- **Coherence**: Reconciles [ADR 0001](../adr/0001-crate-dag-and-layer-boundaries.md), [ADR 0003](../adr/0003-unified-profile-graph-and-state-machine.md), [ADR 0004](../adr/0004-domain-provider-spi-and-plugin-tools.md), and [AC-006](AC-006-universal-repository-memory-synthesis.md); preserves the Pre-kickoff `AUTHORITY_GAP` decision candidate explicitly and keeps sequential waves free of concurrent scope collisions.
+- **Coherence**: Reconciles [ADR 0001](../adr/0001-crate-dag-and-layer-boundaries.md), [ADR 0003](../adr/0003-unified-profile-graph-and-state-machine.md), [ADR 0004](../adr/0004-domain-provider-spi-and-plugin-tools.md), and [AC-006](archive/AC-006-universal-repository-memory-synthesis.md); preserves the Pre-kickoff `AUTHORITY_GAP` decision candidate explicitly and keeps sequential waves free of concurrent scope collisions.

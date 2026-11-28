@@ -26,6 +26,7 @@ __pycache__/
 .acdd/reports/
 .acdd/tmp/
 .acdd/backup-0.5/
+/docs/memories/.retro/
 /docs/memories/retrospectives/
 website/public/
 website/content/docs/

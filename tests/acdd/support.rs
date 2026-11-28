@@ -1,15 +1,16 @@
 use acdd_core::config::default_specs;
 use acdd_core::ports::{
-    ActionCapability, CheckCapability, CompositeDomainProvider, DomainActionReq,
-    DomainActionResult, DomainCapabilities, DomainCheckOutcome, DomainCheckReq, DomainContextReq,
-    DomainProvider, DomainToolDef, DomainToolOutput, DomainToolReq,
+    ActionCapability, CheckCapability, CompositeDomainProvider, ContextCapability,
+    ContextScopeMode, DomainActionReq, DomainActionResult, DomainCapabilities, DomainCheckOutcome,
+    DomainCheckReq, DomainContextReq, DomainProvider, DomainToolDef, DomainToolOutput,
+    DomainToolReq,
 };
 use acdd_core::response::ResponsePolicy;
 use acdd_core::schema::{AdditionalPropertiesDef, SchemaDef};
 use acdd_core::subsystems::SubsystemRegistry;
 use acdd_state::usecases::StateEngineConfig;
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -80,11 +81,22 @@ impl TestProvider {
                         input_schema: acdd_core::lint::lint_check_input_schema(),
                     },
                 ],
-                context_lenses: BTreeSet::from([
-                    "symbols".to_owned(),
-                    "tests".to_owned(),
-                    "external_callers".to_owned(),
-                ]),
+                context: vec![
+                    ContextCapability {
+                        name: "symbols".to_owned(),
+                        scope_mode: ContextScopeMode::NodeOnly,
+                        default_paths_key: None,
+                        input_schema: SchemaDef::object(),
+                    },
+                    ContextCapability {
+                        name: "tests".to_owned(),
+                        scope_mode: ContextScopeMode::NodeOnly,
+                        default_paths_key: None,
+                        input_schema: SchemaDef::object(),
+                    },
+                    ContextCapability::simple("external_callers"),
+                ],
+                supports_collection_context: false,
                 tools: vec![],
             },
         };
@@ -102,12 +114,16 @@ impl TestProvider {
                         input_schema: SchemaDef::object(),
                     },
                 ],
-                context_lenses: BTreeSet::from([
-                    "adrs".to_owned(),
-                    "invariants".to_owned(),
-                    "instructions".to_owned(),
-                    "workspace_config".to_owned(),
-                ]),
+                context: vec![
+                    ContextCapability {
+                        name: "invariants".to_owned(),
+                        scope_mode: ContextScopeMode::Admitted,
+                        default_paths_key: Some("docs".to_owned()),
+                        input_schema: SchemaDef::object(),
+                    },
+                    ContextCapability::simple("workspace_config"),
+                ],
+                supports_collection_context: true,
                 tools: vec![],
             },
         };
@@ -131,7 +147,8 @@ impl TestProvider {
                     name: "health".to_owned(),
                     input_schema: SchemaDef::object(),
                 }],
-                context_lenses: BTreeSet::from(["endpoints".to_owned()]),
+                context: vec![ContextCapability::simple("endpoints")],
+                supports_collection_context: false,
                 tools: vec![DomainToolDef {
                     name: "ping".to_owned(),
                     description: "Ping endpoint".to_owned(),

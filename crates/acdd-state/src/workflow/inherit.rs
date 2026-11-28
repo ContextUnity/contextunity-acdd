@@ -575,7 +575,7 @@ fn strip_disabled_domains_from_gates(
         });
         gate.gate
             .context
-            .retain(|ctx| !disabled_domains.iter().any(|d| context_belongs_to_domain(ctx, d)));
+            .retain(|ctx| !disabled_domains.iter().any(|d| context_belongs_to_domain(ctx.as_str(), d)));
         gate.gate.guidance.retain(|g| match g {
             super::schema::GateGuidanceRef::Slot(slot) => {
                 !disabled_domains.iter().any(|d| has_domain_prefix(slot, d))

@@ -32,8 +32,9 @@ use acdd_core::format::estimate_json_bytes;
 use acdd_core::fs::is_doc_path;
 use acdd_core::path_policy::expand_glob_braces;
 use acdd_core::ports::{
-    CheckCapability, DomainActionReq, DomainActionResult, DomainCapabilities, DomainCheckOutcome,
-    DomainCheckReq, DomainContextReq, DomainProvider, FreshnessObservation,
+    CheckCapability, ContextCapability, ContextScopeMode, DomainActionReq, DomainActionResult,
+    DomainCapabilities, DomainCheckOutcome, DomainCheckReq, DomainContextReq, DomainProvider,
+    FreshnessObservation,
 };
 use acdd_core::schema::SchemaDef;
 use acdd_core::subsystems::SubsystemId;
@@ -244,7 +245,9 @@ impl DocsDomainProvider {
             };
             candidates.push(RankedDocCandidate {
                 rel_path: rel,
+                item_heading_ref: None,
                 explicit_scopes,
+                explicit_symbols: Vec::new(),
                 is_global_fallback,
                 id_tokens,
                 title: (name != "instructions").then_some(title),
@@ -275,7 +278,7 @@ impl DocsDomainProvider {
     fn provide_specs_lens(&self, name: &str, req: &DomainContextReq) -> Result<Value> {
         let worktree_adapter = resolve_worktree_adapter(&self.root, &req.worktree, &self.config)?;
         let effective_cols = acdd_spec::effective_spec_collections(&worktree_adapter.specs);
-        if !effective_cols.contains_key(name) {
+        if acdd_spec::matching_spec_collections(&effective_cols, name).is_empty() {
             return Err(AcddError::new(
                 ErrorCode::WorkflowSchemaInvalid,
                 format!("unknown spec collection 'specs.{name}'"),
@@ -286,21 +289,41 @@ impl DocsDomainProvider {
             .values()
             .flat_map(|cfg| cfg.patterns().into_iter().map(str::to_owned))
             .collect();
-        let matched = walk::collect_matching_worktree_files_for_globs(
-            &req.worktree,
-            &col_globs,
-            |rel| {
-                is_doc_path(rel)
-                    && !is_archived_doc_rel(rel)
-                    && effective_cols
-                        .values()
-                        .any(|cfg| super::common::is_active_collection_spec_rel(rel, cfg))
-            },
-        );
-        let mut candidates = Vec::with_capacity(matched.len());
-        for (_, rel) in matched {
+        let is_active_spec = |rel: &str| {
+            is_doc_path(rel)
+                && effective_cols
+                    .values()
+                    .any(|cfg| super::common::is_active_collection_spec_rel(rel, cfg))
+        };
+        let worktree_matched =
+            walk::collect_matching_worktree_files_for_globs(&req.worktree, &col_globs, is_active_spec);
+        let mut seen_rels: BTreeSet<String> =
+            worktree_matched.iter().map(|(_, rel)| rel.clone()).collect();
+        let mut sources: Vec<(PathBuf, String)> = worktree_matched
+            .into_iter()
+            .map(|(_, rel)| (req.worktree.clone(), rel))
+            .collect();
+        if acdd_core::fs::canonicalize_macos_var(&req.workspace_root)
+            != acdd_core::fs::canonicalize_macos_var(&req.worktree)
+        {
+            let ignored_in_primary =
+                acdd_core::git::collect_gitignored_untracked_files(&req.workspace_root);
+            if !ignored_in_primary.is_empty() {
+                for (_, rel) in walk::collect_matching_worktree_files_for_globs(
+                    &req.workspace_root,
+                    &col_globs,
+                    is_active_spec,
+                ) {
+                    if ignored_in_primary.contains(&rel) && seen_rels.insert(rel.clone()) {
+                        sources.push((req.workspace_root.clone(), rel));
+                    }
+                }
+            }
+        }
+        let mut candidates = Vec::with_capacity(sources.len());
+        for (source_root, rel) in sources {
             let Ok(text) =
-                acdd_core::fs::read_confined_utf8(&req.worktree, std::path::Path::new(&rel))
+                acdd_core::fs::read_confined_utf8(&source_root, std::path::Path::new(&rel))
             else {
                 continue;
             };
@@ -340,13 +363,15 @@ impl DocsDomainProvider {
             } else {
                 doc.title.clone()
             };
-            if doc.items.is_empty() {
+            if !doc.items.values().any(|v| !v.is_empty()) {
                 let is_global_fallback =
                     doc_scopes.is_empty() || doc_scopes.iter().any(|s| is_global_wildcard(s));
                 let id_tokens = build_doc_id_tokens(&rel, Some(&doc.id));
                 candidates.push(RankedDocCandidate {
                     rel_path: rel.clone(),
+                    item_heading_ref: None,
                     explicit_scopes: doc_scopes,
+                    explicit_symbols: Vec::new(),
                     is_global_fallback,
                     id_tokens,
                     title: Some(title.clone()),
@@ -360,7 +385,16 @@ impl DocsDomainProvider {
                     }),
                 });
             } else {
-                for items_vec in doc.items.values() {
+                let resolved_schema = acdd_spec::schema::resolve_spec_schema(
+                    doc.spec.as_deref(),
+                    owning_col,
+                    &effective_cols,
+                )
+                .ok();
+                for (item_col_key, items_vec) in &doc.items {
+                    let item_schema = resolved_schema
+                        .as_ref()
+                        .and_then(|s| s.items.get(item_col_key));
                     for spec_item in items_vec {
                         if spec_item.status == SpecStatus::Cancelled {
                             continue;
@@ -373,6 +407,11 @@ impl DocsDomainProvider {
                         push_json_scope_values(
                             spec_item.fields.get("owners"),
                             &mut item_scopes,
+                        );
+                        let mut explicit_symbols = Vec::new();
+                        push_json_scope_values(
+                            spec_item.fields.get("symbols"),
+                            &mut explicit_symbols,
                         );
                         let explicit_scopes = if item_scopes.is_empty() {
                             doc_scopes.clone()
@@ -390,30 +429,24 @@ impl DocsDomainProvider {
                         if !id_tokens.iter().any(|t| t == item_ref) {
                             id_tokens.push(item_ref.to_owned());
                         }
-                        let summary = spec_item
-                            .fields
-                            .get("statement")
-                            .or_else(|| spec_item.fields.get("target"))
-                            .or_else(|| spec_item.fields.get("title"))
-                            .and_then(Value::as_str)
-                            .map(str::trim)
-                            .filter(|s| !s.is_empty())
-                            .unwrap_or(title.as_str())
-                            .to_owned();
+                        let summary = summarize_spec_item_fields(
+                            &spec_item.fields,
+                            item_schema,
+                            title.as_str(),
+                        );
                         candidates.push(RankedDocCandidate {
                             rel_path: rel.clone(),
+                            item_heading_ref: Some(format!("{}: {item_ref}", spec_item.item)),
                             explicit_scopes,
+                            explicit_symbols,
                             is_global_fallback,
                             id_tokens,
                             title: Some(summary.clone()),
                             priority_bonus: 0,
                             payload: json!({
                                 "spec_id": doc.id,
-                                "id": doc.id,
                                 "ref": item_ref,
-                                "item": spec_item.item,
-                                "title": title,
-                                "statement": summary,
+                                "summary": summary,
                                 "path": rel,
                                 "status": spec_item.status,
                             }),
@@ -608,10 +641,16 @@ impl DomainProvider for DocsDomainProvider {
                     input_schema: docs_specs_input_schema(),
                 },
             ],
-            context_lenses: BTreeSet::from([
-                "invariants".to_owned(),
-                "workspace_config".to_owned(),
-            ]),
+            context: vec![
+                ContextCapability {
+                    name: "invariants".to_owned(),
+                    scope_mode: ContextScopeMode::Admitted,
+                    default_paths_key: Some("docs".to_owned()),
+                    input_schema: SchemaDef::object(),
+                },
+                ContextCapability::simple("workspace_config"),
+            ],
+            supports_collection_context: true,
             tools: Vec::new(),
         }
     }
@@ -703,6 +742,49 @@ impl DomainProvider for DocsDomainProvider {
             )
             .into()),
         }
+    }
+}
+
+fn scalar_json_preview(val: &Value) -> Option<String> {
+    match val {
+        Value::String(s) => {
+            let trimmed = s.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_owned())
+        }
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+fn summarize_spec_item_fields(
+    fields: &BTreeMap<String, Value>,
+    item_schema: Option<&acdd_spec::schema::SpecItemSchemaDef>,
+    fallback_title: &str,
+) -> String {
+    let mut pairs: Vec<(&str, String)> = Vec::new();
+    if let Some(schema) = item_schema {
+        for req_key in &schema.fields.required {
+            if let Some(val) = fields.get(req_key).and_then(scalar_json_preview) {
+                pairs.push((req_key.as_str(), val));
+            }
+        }
+    }
+    if pairs.is_empty() {
+        for (k, v) in fields {
+            if let Some(val) = scalar_json_preview(v) {
+                pairs.push((k.as_str(), val));
+            }
+        }
+    }
+    match pairs.as_slice() {
+        [] => fallback_title.to_owned(),
+        [(_, single)] => single.clone(),
+        many => many
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join(", "),
     }
 }
 

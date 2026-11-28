@@ -762,8 +762,7 @@ fn render_specs_lens(out: &mut String, key: &str, val: &Value) {
             .and_then(Value::as_str)
             .unwrap_or_default();
         let summary = item
-            .get("statement")
-            .or_else(|| item.get("target"))
+            .get("summary")
             .or_else(|| item.get("title"))
             .and_then(Value::as_str)
             .unwrap_or_default();

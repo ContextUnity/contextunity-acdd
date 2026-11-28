@@ -481,9 +481,6 @@ impl DeltaSpecView for SpecDocument {
                     .collect(),
             );
         }
-        if field == "rules" && self.spec.as_deref() == Some("memory") {
-            return Some(Vec::new());
-        }
         None
     }
 }
@@ -773,7 +770,12 @@ fn parse_spec_inner(
     }
 
     let mut tasks = Vec::new();
-    let mut items: BTreeMap<String, Vec<SpecItem>> = BTreeMap::new();
+    let mut items: BTreeMap<String, Vec<SpecItem>> = resolved_schema
+        .items
+        .keys()
+        .filter(|col_key| col_key.as_str() != "tasks")
+        .map(|col_key| (col_key.clone(), Vec::new()))
+        .collect();
 
     for parsed in parsed_items {
         let Some(&(col_key, item_schema)) = token_to_col.get(parsed.item_token.as_str()) else {

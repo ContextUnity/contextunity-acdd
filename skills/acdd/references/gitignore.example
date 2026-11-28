@@ -19,3 +19,6 @@
 .acdd/reports/
 .acdd/run/
 .acdd/tmp/
+
+# Raw per-run retrospectives (consolidated into Git-tracked docs/memories/<domain>.md)
+/docs/memories/.retro/

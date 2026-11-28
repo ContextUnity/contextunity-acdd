@@ -17,7 +17,8 @@ pub mod validate;
 pub use deltas::verify_spec_deltas;
 
 pub use discovery::{
-    effective_spec_collections, match_spec_collection, next_spec_id_for_prefix, read_confined_utf8,
+    effective_spec_collections, match_spec_collection, matching_spec_collections,
+    next_spec_id_for_prefix, read_confined_utf8,
 };
 pub use draft::draft_spec;
 pub use spec::{

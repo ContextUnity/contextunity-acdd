@@ -228,38 +228,40 @@ Built-in `ProofKind` values are:
 Domain-agnostic `acdd-state` delegates domain behavior via `DomainProvider` (`crates/acdd-core/src/ports.rs`; see the [domain extensions guide](../architecture/domain-extensions.md)):
 - **`call: <domain>.<action>`** (`with: { ... }`): Executes a registered domain action (with `lookup_action_result` recovery for mutating actions).
 - **`checks: [<domain>.<check>]`** (or `{ check, with? }`): Automated domain verifiers executed during `acdd verify` / `acdd_verify` (e.g., `code.seam`, `code.lint` supporting `with: { categories: [arch, syntax, docs, duplicates, dead_tails, cycles] }` and failing when `summary.errors > 0`, `code.signature_scope`, `docs.links`, `docs.specs`, `spec.deltas_applied`); `acdd submit` / `acdd_submit` re-validates live freshness against the recorded trace digest without re-running checks.
-- **`context: [<domain>.<lens>]`**: Explicit domain context lenses assembled into `ClaimResp` Tier 6 (see the complete table below).
+- **`context: [<ref> | { context: <ref>, with?: { ... } }]`**: Explicit domain context lenses assembled into `ClaimResp` Tier 6, symmetric with `checks:`. Providers declare typed `ContextCapability` entries (`name`, `scope_mode: admitted | node_only`, `default_paths_key`, `input_schema`) and `supports_collection_context: bool` in `DomainCapabilities` (see the complete table below).
 - **`tools` / `tools_add` / `tools_remove`**: Per-gate MCP tool allowlists layered over `default_tools` (including built-in tools and `<domain>_<name>` plugin tools).
 
-### Context Lenses (`specs.*`, `paths.*`, `docs.*`, `code.*`) & 4-Tier Relevance Ranking
+### Context Lenses (`specs.*`, `paths.*`, `docs.*`, `code.*`) & 5-Tier Diff-Aware Ranking
 
-Every gate declares its exact context lenses in `context:` (`WorkflowDef.paths:` binds non-spec workspace directories/globs, while `acdd.yaml` `specs:` binds Spec collections):
+Every gate declares its exact context lenses in `context:` (either as a string shorthand or `{ context: <ref>, with: { ... } }`; `WorkflowDef.paths:` binds non-spec workspace directories/globs, while `acdd.yaml` `specs:` binds Spec collections):
 
 | Lens | Owner / Source | What It Injects into `ClaimResp.context_lenses` |
 |---|---|---|
-| `specs.<name>` | `acdd.yaml` `specs.<name>` (`DocsDomainProvider`) | Specs and items from the configured Spec collection (e.g. `specs.memories`, `specs.plans`), ranked via the 4-tier relevance policy below and packed into the Tier 6 byte budget. |
-| `paths.<name>` | `WorkflowDef.paths.<name>` (`DocsDomainProvider`) | Non-spec workspace files/directories declared in the workflow `paths:` map (e.g. `paths.instructions`, `paths.adrs`), ranked via the 4-tier relevance policy below. |
+| `specs.<name\|base>` | `acdd.yaml` `specs.<name>` or built-in base (`DocsDomainProvider`) | Specs and schema-rendered items from the matching Spec collection(s) (e.g. `specs.memories`, `specs.plans`, or base-agnostic `specs.memory`), ranked via the 5-tier diff-aware policy below and packed into the Tier 6 byte budget. |
+| `paths.<name>` | `WorkflowDef.paths.<name>` (`DocsDomainProvider`) | Non-spec workspace files/directories declared in the workflow `paths:` map (e.g. `paths.instructions`, `paths.adrs`), ranked via the 5-tier diff-aware policy below. |
 | `docs.invariants` | `DocsDomainProvider` | Non-archive `INV-*` invariants governing symbols or paths in `admitted_scope`, marking lint-backed rules with `[ENFORCED]`. |
 | `docs.workspace_config` | `DocsDomainProvider` | Summary of active workspace config: `specs`, `docs_roots`, `workflows_dirs`, `available_workflows`, `architecture_zones`, `limits.max_metadata_bytes`, and `modules`. |
 | `code.symbols` | `CodeDomainProvider` | Indexed production symbols inside `admitted_scope` (filtering derived/generated methods). |
 | `code.tests` | `CodeDomainProvider` | Deduplicated covering test paths for `admitted_scope` symbols (capped at top 8). |
 | `code.external_callers` | `CodeDomainProvider` | Inbound callers and SQL table consumers outside `admitted_scope` (capped at top 5 plus overflow count). |
 
-**4-Tier Deterministic Relevance Ranking** ([ADR 0006](../adr/0006-budgeted-gate-context-and-dual-surface-parity.md), [ADR 0014](../adr/0014-declarative-spec-schemas-and-items.md)):
-`specs.<name>` and `paths.<name>` lenses rank candidate items/documents deterministically before bounded 0-1 knapsack / `max_bytes` packing (`pack_knapsack_indices`):
+**5-Tier Diff-Aware Relevance Ranking** ([ADR 0006](../adr/0006-budgeted-gate-context-and-dual-surface-parity.md), [ADR 0014](../adr/0014-declarative-spec-schemas-and-items.md), [ADR 0015](../adr/0015-retrospective-memory-and-diff-aware-context.md)):
+`specs.<name|base>` and `paths.<name>` lenses rank candidate items/documents deterministically before bounded 0-1 knapsack / `max_bytes` packing (`pack_knapsack_indices`):
 1. **Direct ID/title citation** in the current task `target` or owning Spec body (highest priority).
-2. **Explicit `scope` / `owners` overlap** (`scopes_overlap` between item `scope` / spec `owners` and task `admitted_scope`).
-3. **Indexed `code-map.sqlite` doc edges** (`documents`, `references_doc`, `cites_doc`, `governs`, `governed_by` linking the document to any path or symbol in `admitted_scope`).
-4. **Global fallback rules** (`scope: ["**"]` or unlinked repo-wide documents — lowest priority, dropped first under budget pressure).
+2. **Active `git diff` match** (when the worktree has uncommitted changes): hunk-exact `changed_symbols` / `doc_section` edges (when `modules.code: true` and `code-map.sqlite` exists) > file-diff `scope` / `owners` overlap > file-diff `code_map` edges.
+3. **Explicit `admitted_scope` overlap** (`scopes_overlap` between item `scope` / spec `owners` and task `admitted_scope`).
+4. **Indexed `code-map.sqlite` doc edges** (`documents`, `references_doc`, `cites_doc`, `governs`, `governed_by` linking the document to any path or symbol in `admitted_scope`).
+5. **Global fallback rules** (`scope: ["**"]` or unlinked repo-wide documents — lowest priority, dropped first under budget pressure).
 
-### Repository Memory & `memory_synthesis` Gate Template
+### Repository Memory, `memory_synthesis`, and Retrospective Pipeline
 
-Built-in `code.yaml` and `documentation.yaml` ship an opt-in `gate_templates.memory_synthesis` single-role gate template (`use: memory_synthesis`, `scope: [specs.memories]`) that synthesizes durable lessons from run blackboard notes/findings/decisions into `spec: memory` documents under `specs.memories` (e.g. `docs/memories/`). Downstream gates receive relevant memory rules automatically via `context: [specs.memories]` ranked by the 4-tier policy above.
+- **Embedded `memory_synthesis` template**: Built-in `code.yaml` and `documentation.yaml` ship an opt-in `gate_templates.memory_synthesis` single-role gate template (`use: memory_synthesis`, `scope: [specs.memory]`) that synthesizes durable lessons from run blackboard notes/findings/decisions into `spec: memory` documents across any collection using the `memory` base. Downstream gates receive relevant memory rules automatically via `context: [specs.memories]` (or `specs.memory`) ranked by the 5-tier diff-aware policy above.
+- **Declarative retrospective pipeline (`retrospective.yaml` + `memory_optimize.yaml`)**: Repositories can capture structured per-run retrospectives without engine hardcoding by declaring `.acdd/specs/retrospective.yaml` (bound via `specs.retrospectives` at `docs/memories/.retro`, gitignored) and running the standalone `memory_optimize` workflow (`skills/acdd/references/acdd-workflow-examples/memory_optimize.yaml`). `memory_optimize` consolidates unprocessed `docs/memories/.retro/<workflow>/<spec_or_run>.md` files into flat Git-tracked `docs/memories/<domain>.md` (plus `docs/memories/instructions-and-skills.md` and `docs/memories/archive/` for retired rules) and moves processed retrospectives to `.retro/<workflow>/.processed/`.
 
 ---
 
 ## Reference Examples
 
 - See the starter overlay template in [`acdd_workflow.yaml.example`](acdd_workflow.yaml.example) (symlink into `skills/acdd/references/`) and the complete field guide in [`skills/acdd/references/workflow-reference.md`](../../skills/acdd/references/workflow-reference.md).
-- Embedded core workflows: [`base.yaml`](../../crates/acdd-state/src/workflow/embedded/base.yaml), [`code.yaml`](../../crates/acdd-state/src/workflow/embedded/code.yaml), and [`documentation.yaml`](../../crates/acdd-state/src/workflow/embedded/documentation.yaml). Auxiliary workflow templates (`audit.yaml`, `spec_planning.yaml`, `hotfix.yaml`) live in [`skills/acdd/references/acdd-workflow-examples/`](../../skills/acdd/references/acdd-workflow-examples/README.md).
+- Embedded core workflows: [`base.yaml`](../../crates/acdd-state/src/workflow/embedded/base.yaml), [`code.yaml`](../../crates/acdd-state/src/workflow/embedded/code.yaml), and [`documentation.yaml`](../../crates/acdd-state/src/workflow/embedded/documentation.yaml). Auxiliary workflow templates (`audit.yaml`, `spec_planning.yaml`, `hotfix.yaml`, `memory_optimize.yaml`) live in [`skills/acdd/references/acdd-workflow-examples/`](../../skills/acdd/references/acdd-workflow-examples/README.md).
 - See [Workspace configuration](configuration.md#declarative-acdd-workflow-and-role-configuration) for loading precedence and `acdd.yaml` adapter settings.

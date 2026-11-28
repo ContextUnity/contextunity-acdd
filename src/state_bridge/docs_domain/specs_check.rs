@@ -63,22 +63,18 @@ pub(super) fn resolve_target_spec_collections<'a>(
     let mut resolved = Vec::new();
     let mut seen = BTreeSet::new();
     for sel in selectors {
-        let mut matched_any = false;
-        for (col_key, col_cfg) in effective_cols {
-            let base_match = col_cfg.effective_builtin_base(Some(col_key)) == Some(sel);
-            if col_key == sel || base_match {
-                matched_any = true;
-                if seen.insert(col_key.as_str()) {
-                    resolved.push((col_key, col_cfg));
-                }
-            }
-        }
-        if !matched_any {
+        let matches = acdd_spec::matching_spec_collections(effective_cols, sel);
+        if matches.is_empty() {
             return Err(AcddError::new(
                 ErrorCode::SpecSchemaInvalid,
                 format!("docs.specs references unknown spec type or collection '{sel}'"),
             )
             .into());
+        }
+        for (col_key, col_cfg) in matches {
+            if seen.insert(col_key.as_str()) {
+                resolved.push((col_key, col_cfg));
+            }
         }
     }
     Ok(resolved)

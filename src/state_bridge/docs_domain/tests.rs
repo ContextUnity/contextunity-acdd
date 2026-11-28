@@ -136,8 +136,12 @@ fn docs_domain_checks_links_and_filters_contracts_from_lenses() {
         baseline_ref: None,
         lens_globs: Vec::new(),
         citation_text: None,
+        params: serde_json::Value::Null,
     };
-    let caps = provider.capabilities().context_lenses;
+    let caps_manifest = provider.capabilities();
+    assert!(caps_manifest.supports_collection_context);
+    let caps: std::collections::BTreeSet<&str> =
+        caps_manifest.context.iter().map(|c| c.name.as_str()).collect();
     assert!(caps.contains("invariants"));
     assert!(caps.contains("workspace_config"));
     assert!(!caps.contains("instructions"));

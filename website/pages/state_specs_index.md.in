@@ -6,7 +6,7 @@
 
 1. **Create a specification (or start ad-hoc)**:
    - **What a Spec is**: a Git-tracked Markdown contract (`SpecDocument`) declaring `AC-*` acceptance criteria, `INV-*` invariants, and `### task: <id>` blocks with `depends_on` edges and disjoint file `scope:` globs.
-   - **Spec configurations (`milestones`, `plans`)**: named folders configured under `specs:` in `acdd.yaml` by `acdd init` (e.g. `milestones` → `docs/milestones/AC-001-...md`; customizable to any name/prefix).
+   - **Spec configurations (`milestones`, `plans`, `memories`, custom schemas)**: named folders configured under `specs:` in `acdd.yaml` (e.g. `milestones` → `docs/milestones/AC-001-...md`, `memories` → `docs/memories/` with `base: memory`, or declarative external schemas like `.acdd/specs/retrospective.yaml`). Each collection supports `ignore:` (defaulting to `["archive", ".*", "README.md", "AGENTS.md", "CLAUDE.md"]`) and allows disjoint child collections inside ignored subdirectories (e.g. gitignored `docs/memories/.retro` under `docs/memories`).
    - `acdd draft <spec> <slug>`: scaffolds the next sequentially numbered spec file inside the chosen `specs.<name>` folder.
    - `spec_planning` template (`skills/acdd/references/acdd-workflow-examples/spec_planning.yaml`): lets an architect agent draft and review `AC-*` criteria and disjoint task waves (`acdd start --goal "Plan ..." --workflow .acdd/workflows/spec_planning.yaml`).
    - `acdd start --goal "..."`: starts a single-goal workflow directly (e.g. `--workflow hotfix --scope src/parser/`) when you do not need a multi-task spec file.

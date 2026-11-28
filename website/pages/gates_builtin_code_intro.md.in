@@ -1,6 +1,6 @@
 # Built-in Workflow: `code`
 
-The embedded **`code`** workflow (`crates/acdd-state/src/workflow/embedded/code.yaml`) is one of three workflows embedded directly in the `acdd` binary (`base`, `code`, `documentation`; reference templates for `audit`, `spec_planning`, and `hotfix` live in `skills/acdd/references/acdd-workflow-examples/`). It inherits `base` (`git.isolation: worktree`, `save: commit`, `limits`) and defines `architect`, `builder`, and `independent_reviewer` roles alongside abstract `build_check` and `verify_all` command slots.
+The embedded **`code`** workflow (`crates/acdd-state/src/workflow/embedded/code.yaml`) is one of three workflows embedded directly in the `acdd` binary (`base`, `code`, `documentation`; reference templates for `audit`, `spec_planning`, `hotfix`, and `memory_optimize` live in `skills/acdd/references/acdd-workflow-examples/`). It inherits `base` (`git.isolation: worktree`, `save: commit`, `limits`) and defines `architect`, `builder`, and `independent_reviewer` roles alongside abstract `build_check` and `verify_all` command slots.
 
 ---
 
@@ -15,7 +15,7 @@ When a worker calls `acdd_claim` / `acdd claim <node_cursor>`, ACDD builds a **6
 | **3 (Architect Slice)** | `pre_task_slice` | Per-task blueprint slice materialized during `blueprint_synthesis` (`canonical_owners`, `mechanism_rules`, `max_net_loc`, `verification_seam`, `incoming_seams`, `outgoing_seams`). |
 | **4 (Dependencies)** | `dependency_receipts` | Completed receipts from upstream dependency tasks (`need:`). |
 | **5 (Coordination)** | `blackboard` | Recent `notes`, `blockers`, and `decisions` posted on `acdd_blackboard` (up to 6 items × 220 chars; records `blackboard (N of M omitted)` in `omitted_sections` when truncated). |
-| **6 (Domain Lenses)** | `context_lenses` | Dynamic `docs.*` and `code.*` context lenses declared on the gate's `context:` list, in YAML declaration order (trimmed sections appear in `omitted_sections`). |
+| **6 (Domain Lenses)** | `context_lenses` | Dynamic `specs.*`, `paths.*`, `docs.*`, and `code.*` context lenses declared on the gate's `context:` list (string or `{ context, with }` form, 5-tier diff-aware ranking), in YAML declaration order (trimmed sections appear in `omitted_sections`). |
 
 ---
 
@@ -40,7 +40,7 @@ When a worker calls `acdd_claim` / `acdd claim <node_cursor>`, ACDD builds a **6
    - Receives `docs.*` and `code.symbols` to realign the design.
 7. **`run_tests` & `polish`**:
    - `run_tests` runs `verify_all` + `code.lint` (`[arch, syntax, docs]`).
-   - Failures route to `polish` (`builder`, scoped to docs/skills/workflows/configs).
+   - Failures route to `polish` (`builder`, scoped to `paths.docs`, `paths.adrs`, `paths.instructions`, `.acdd/` configs, `CHANGELOG.md`, and `.gitignore`).
 8. **`integration_review` & `handoff`**:
    - `integration_review` audits the full integrated run branch (`independent_from: [polish, tasks.build]`).
    - `handoff` finalizes the run (`post: commit`, `archive: true`, `prune: true`).

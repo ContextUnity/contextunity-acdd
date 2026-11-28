@@ -15,6 +15,7 @@ items:
       additionalProperties: false
       properties:
         scope: { type: array, items: { type: string } }
+        symbols: { type: array, items: { type: string, minLength: 1 } }
         statement: { type: string, minLength: 1 }
         status: { type: string, enum: [active, deprecated, superseded] }
         evidence:

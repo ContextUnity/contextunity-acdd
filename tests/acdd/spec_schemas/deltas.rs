@@ -284,11 +284,27 @@ spec_deltas:
         id_rep.diagnostics
     );
 
-    // 6. Empty deltas pass cleanly.
+    // 6. Empty deltas pass cleanly; empty declared custom item collection resolves Some([]), undeclared resolves None.
     let no_deltas = parse_spec("---\nid: AC-EMPTY\ntitle: Empty\n---\n").unwrap();
     let empty_rep = verify_spec_deltas(&[&no_deltas], &[&no_deltas], None);
     assert!(empty_rep.is_ok());
     assert_eq!(empty_rep.deltas_checked, 0);
+
+    let empty_api = parse_spec_with_collections(
+        "---\nid: API-EMPTY\ntitle: Empty API\nspec: api\n---\n",
+        adapter.specs.get_key_value("api").map(|(k, v)| (k.as_str(), v)),
+        &adapter.specs,
+    )
+    .unwrap();
+    assert_eq!(empty_api.items.get("endpoints"), Some(&Vec::new()));
+    assert_eq!(
+        acdd_spec::deltas::DeltaSpecView::delta_named_entries(&empty_api, "endpoints"),
+        Some(Vec::new())
+    );
+    assert_eq!(
+        acdd_spec::deltas::DeltaSpecView::delta_named_entries(&empty_api, "undeclared"),
+        None
+    );
 }
 
 #[test]

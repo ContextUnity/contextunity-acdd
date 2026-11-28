@@ -700,6 +700,118 @@ impl<'de> Deserialize<'de> for CheckRef {
     }
 }
 
+/// Context lens entry on a `GateDef` (`"domain.lens"` shorthand or `{ context, with? }` object).
+#[derive(Debug, Clone, PartialEq, Eq, JsonSchema)]
+pub struct ContextEntry {
+    /// Qualified context reference (`paths.<name>`, `specs.<name>`, or `<domain>.<name>`).
+    pub context: String,
+    /// Optional parameters validated against `ContextCapability.input_schema`.
+    pub with: Value,
+}
+
+impl ContextEntry {
+    /// Construct a shorthand `ContextEntry` with empty object parameters.
+    pub fn new(context: impl Into<String>) -> Self {
+        Self {
+            context: context.into(),
+            with: default_empty_object(),
+        }
+    }
+
+    /// Return the qualified context reference string.
+    pub fn as_str(&self) -> &str {
+        &self.context
+    }
+
+    /// Return `true` when `with` is null or an empty JSON object `{}`.
+    pub fn has_empty_params(&self) -> bool {
+        self.with.is_null() || self.with.as_object().is_some_and(serde_json::Map::is_empty)
+    }
+}
+
+impl From<&str> for ContextEntry {
+    fn from(s: &str) -> Self {
+        Self::new(s)
+    }
+}
+
+impl From<String> for ContextEntry {
+    fn from(s: String) -> Self {
+        Self::new(s)
+    }
+}
+
+impl PartialEq<str> for ContextEntry {
+    fn eq(&self, other: &str) -> bool {
+        self.context == other && self.has_empty_params()
+    }
+}
+
+impl PartialEq<&str> for ContextEntry {
+    fn eq(&self, other: &&str) -> bool {
+        self == *other
+    }
+}
+
+impl PartialEq<String> for ContextEntry {
+    fn eq(&self, other: &String) -> bool {
+        &self.context == other && self.has_empty_params()
+    }
+}
+
+impl Serialize for ContextEntry {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        if self.has_empty_params() {
+            serializer.serialize_str(&self.context)
+        } else {
+            use serde::ser::SerializeMap;
+            let mut map = serializer.serialize_map(Some(2))?;
+            map.serialize_entry("context", &self.context)?;
+            map.serialize_entry("with", &self.with)?;
+            map.end()
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ContextEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct MapRepr {
+            context: String,
+            #[serde(default)]
+            with: Option<Value>,
+        }
+
+        match Value::deserialize(deserializer)? {
+            Value::String(context) => Ok(Self {
+                context,
+                with: default_empty_object(),
+            }),
+            val @ Value::Object(_) => {
+                let m: MapRepr = serde_json::from_value(val).map_err(de::Error::custom)?;
+                let with = match m.with {
+                    None | Some(Value::Null) => default_empty_object(),
+                    Some(other) => other,
+                };
+                Ok(Self {
+                    context: m.context,
+                    with,
+                })
+            }
+            _ => Err(de::Error::custom(
+                "context entry must be a string or { context, with? } mapping",
+            )),
+        }
+    }
+}
+
 /// Persistence, immutability, archive, prune, and report policy on a `GateDef`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -906,9 +1018,9 @@ pub struct GateDef {
     /// Domain check verifiers (`[<domain>.<check>]`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub checks: Vec<CheckRef>,
-    /// Domain context lenses (`[<domain>.<lens>]`).
+    /// Domain context lenses (`[<domain>.<lens>]` or `{ context, with }`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub context: Vec<String>,
+    pub context: Vec<ContextEntry>,
     /// Nested child gates (making this node a container).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub gates: Vec<GateDef>,
@@ -1067,7 +1179,7 @@ pub struct RawGateDef {
     pub checks: PatchField<Vec<CheckRef>>,
     /// Domain context lenses list.
     #[serde(skip_serializing)]
-    pub context: PatchField<Vec<String>>,
+    pub context: PatchField<Vec<ContextEntry>>,
     /// Nested child gates / patches.
     #[serde(skip_serializing)]
     pub gates: PatchField<Vec<RawGateItem>>,

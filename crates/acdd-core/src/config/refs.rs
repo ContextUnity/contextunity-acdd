@@ -396,7 +396,7 @@ impl super::schema::SpecConfig {
                     std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string())
                 })?;
                 let segs: Vec<&str> = norm.split('/').collect();
-                expand_spec_dir_segments(root, Path::new(""), &segs, &mut dirs)?;
+                expand_spec_dir_segments(self, root, Path::new(""), &segs, &mut dirs)?;
             }
         }
         Ok(dirs.into_iter().collect())
@@ -404,6 +404,7 @@ impl super::schema::SpecConfig {
 }
 
 fn expand_spec_dir_segments(
+    spec_cfg: &super::schema::SpecConfig,
     root: &Path,
     current_rel: &Path,
     segs: &[&str],
@@ -439,7 +440,7 @@ fn expand_spec_dir_segments(
     let (first, rest) = (segs[0], &segs[1..]);
     if first == "**" || first.contains('*') || first.contains('?') {
         if first == "**" {
-            expand_spec_dir_segments(root, current_rel, rest, out)?;
+            expand_spec_dir_segments(spec_cfg, root, current_rel, rest, out)?;
         }
         let base = if current_rel.as_os_str().is_empty() {
             root.to_path_buf()
@@ -454,7 +455,11 @@ fn expand_spec_dir_segments(
         let next_segs = if first == "**" { segs } else { rest };
         for entry in entries {
             let entry = entry?;
-            if entry.file_name() == "archive" {
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| spec_cfg.is_ignored_dir_name(name))
+            {
                 continue;
             }
             let ft = entry.file_type()?;
@@ -463,6 +468,7 @@ fn expand_spec_dir_segments(
             }
             if first == "**" {
                 expand_spec_dir_segments(
+                    spec_cfg,
                     root,
                     &current_rel.join(entry.file_name()),
                     next_segs,
@@ -473,12 +479,18 @@ fn expand_spec_dir_segments(
                     continue;
                 };
                 if crate::path_policy::glob_matches(first, &name) {
-                    expand_spec_dir_segments(root, &current_rel.join(name), next_segs, out)?;
+                    expand_spec_dir_segments(
+                        spec_cfg,
+                        root,
+                        &current_rel.join(name),
+                        next_segs,
+                        out,
+                    )?;
                 }
             }
         }
     } else {
-        expand_spec_dir_segments(root, &current_rel.join(first), rest, out)?;
+        expand_spec_dir_segments(spec_cfg, root, &current_rel.join(first), rest, out)?;
     }
     Ok(())
 }

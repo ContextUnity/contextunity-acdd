@@ -1552,23 +1552,22 @@ gates:
                 std::sync::Arc::new(StubDomainProvider::new(
                     "code",
                     acdd_core::ports::DomainCapabilities {
-                        context_lenses: std::collections::BTreeSet::from([
-                            "symbols".to_owned(),
-                            "tests".to_owned(),
-                            "external_callers".to_owned(),
-                        ]),
+                        context: vec![
+                            acdd_core::ports::ContextCapability::simple("symbols"),
+                            acdd_core::ports::ContextCapability::simple("tests"),
+                            acdd_core::ports::ContextCapability::simple("external_callers"),
+                        ],
                         ..acdd_core::ports::DomainCapabilities::default()
                     },
                 )),
                 std::sync::Arc::new(StubDomainProvider::new(
                     "docs",
                     acdd_core::ports::DomainCapabilities {
-                        context_lenses: std::collections::BTreeSet::from([
-                            "instructions".to_owned(),
-                            "adrs".to_owned(),
-                            "invariants".to_owned(),
-                            "workspace_config".to_owned(),
-                        ]),
+                        context: vec![
+                            acdd_core::ports::ContextCapability::simple("invariants"),
+                            acdd_core::ports::ContextCapability::simple("workspace_config"),
+                        ],
+                        supports_collection_context: true,
                         ..acdd_core::ports::DomainCapabilities::default()
                     },
                 )),

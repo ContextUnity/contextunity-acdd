@@ -290,12 +290,12 @@ closure:
 
 ## Goal & Non-goals
 
-**Goal.** Build on [AR-006](archive/AR-006-acdd-spec-crate-and-workflow-cutover.md) (`crates/acdd-spec`, `preset:`, `.acdd/workflows/`) to implement [ADR 0014](../adr/0014-declarative-spec-schemas-and-items.md): universal schema-validated Specs in `acdd.yaml` `specs:` (inline, `base: contract|memory`, or `.acdd/specs/*.yaml` `ref:`), named `items:` collections, `0..N` attached input specs per run (`acdd start [SPEC ...]`) and `0..M` validated output specs (`docs.specs`), explicit `specs.<name>` and `paths.<name>` context/scope lenses with documented 4-tier deterministic relevance ranking, `spec_deltas` verified by `spec.deltas_applied`, customizable ANSI CLI `acdd roadmap`, and repository memory as the built-in `memory` Spec.
+**Goal.** Build on [AR-006](AR-006-acdd-spec-crate-and-workflow-cutover.md) (`crates/acdd-spec`, `preset:`, `.acdd/workflows/`) to implement [ADR 0014](../../adr/0014-declarative-spec-schemas-and-items.md): universal schema-validated Specs in `acdd.yaml` `specs:` (inline, `base: contract|memory`, or `.acdd/specs/*.yaml` `ref:`), named `items:` collections, `0..N` attached input specs per run (`acdd start [SPEC ...]`) and `0..M` validated output specs (`docs.specs`), explicit `specs.<name>` and `paths.<name>` context/scope lenses with documented 4-tier deterministic relevance ranking, `spec_deltas` verified by `spec.deltas_applied`, customizable ANSI CLI `acdd roadmap`, and repository memory as the built-in `memory` Spec.
 
 **Non-goals.**
-- Crate extraction (`crates/acdd-spec`) and `profile`→`workflow` / `collection`→`spec` cutover (already completed in [AR-006](archive/AR-006-acdd-spec-crate-and-workflow-cutover.md)).
-- Generalized `mode: swarm` / `with: spec.<collection>` execution over arbitrary item collections or extended `when:` field predicates (owned by [AC-005](AC-005-unified-swarm-gates-and-peer-board-coordination.md)).
-- Pause-and-call child runs (`parent_run_id` / `waiting_on_run_id`) across workflows (owned by [AC-008](AC-008-always-on-reactive-triggers-and-deferred-approvals.md)).
+- Crate extraction (`crates/acdd-spec`) and `profile`→`workflow` / `collection`→`spec` cutover (already completed in [AR-006](AR-006-acdd-spec-crate-and-workflow-cutover.md)).
+- Generalized `mode: swarm` / `with: spec.<collection>` execution over arbitrary item collections or extended `when:` field predicates (owned by [AC-005](../AC-005-unified-swarm-gates-and-peer-board-coordination.md)).
+- Pause-and-call child runs (`parent_run_id` / `waiting_on_run_id`) across workflows (owned by [AC-008](../AC-008-always-on-reactive-triggers-and-deferred-approvals.md)).
 - Vector stores, embeddings, fuzzy retrieval, model clients, or new `Cargo.toml` dependencies.
 
 ## Target architecture & decisions
@@ -900,7 +900,7 @@ receipt:
 ## Negative boundaries
 
 - No inline `architecture:` block inside `acdd.yaml` (architecture zones/rules live strictly in `.acdd/lint/*.yaml` via `lint_dirs:` and document-embedded invariants), no duplicate `specs:` or `roadmap:` keys inside `.acdd/workflows/*.yaml`, and no hidden `specs → paths` magic bridging.
-- No separate `inputs:` workflow/milestone DSL and no nested `GateDef.workflow:` YAML merging (multi-workflow chaining uses pause-and-call child runs in [AC-008](AC-008-always-on-reactive-triggers-and-deferred-approvals.md)).
+- No separate `inputs:` workflow/milestone DSL and no nested `GateDef.workflow:` YAML merging (multi-workflow chaining uses pause-and-call child runs in [AC-008](../AC-008-always-on-reactive-triggers-and-deferred-approvals.md)).
 - No memory-specific parser, registry, status axis, evidence collector, reviewer gate, context lens, CLI command, or MCP tool.
 - No second schema validator or file resolver outside `SchemaDef` and the shared `acdd-core` confined reference resolver.
 - No multi-level spec inheritance trees, no vector store/embeddings, and no `Cargo.toml` modifications in `AC-006`.
@@ -909,4 +909,4 @@ receipt:
 
 - **Completeness**: Every criterion (`AC-01`..`AC-10`) maps 1:1 to a bounded task across Waves 0–6, dedicated seams in `tests/acdd/spec_schemas/`, and co-evolved ADRs/docs/examples.
 - **Correctness**: Every `AC-*` names trigger, expected behavior, fail-closed rejection (`SPEC_FIELD_UNKNOWN`, `SPEC_ITEM_UNKNOWN`, `ITEM_DEPENDENCY_UNKNOWN`, `ACDD_WORKFLOW_SCHEMA_INVALID`), and seam mutation proof.
-- **Coherence**: Builds cleanly on [AR-006](archive/AR-006-acdd-spec-crate-and-workflow-cutover.md), reconciles [ADR 0006](../adr/0006-budgeted-gate-context-and-dual-surface-parity.md) and [ADR 0014](../adr/0014-declarative-spec-schemas-and-items.md), preserves `INV-SINGLE-OWNER`, `INV-CORE-LEAF`, `INV-SPEC-CRATE-BOUNDARY`, and `INV-STATE-NO-INDEX`, and keeps all concurrent same-wave `scope:` globs strictly disjoint (Wave 1: `spec-core-and-contract-schema` vs. `acdd-yaml-specs-and-refs`; Wave 4: `spec-deltas` vs. `roadmap-display-and-schema-filters`).
+- **Coherence**: Builds cleanly on [AR-006](AR-006-acdd-spec-crate-and-workflow-cutover.md), reconciles [ADR 0006](../../adr/0006-budgeted-gate-context-and-dual-surface-parity.md) and [ADR 0014](../../adr/0014-declarative-spec-schemas-and-items.md), preserves `INV-SINGLE-OWNER`, `INV-CORE-LEAF`, `INV-SPEC-CRATE-BOUNDARY`, and `INV-STATE-NO-INDEX`, and keeps all concurrent same-wave `scope:` globs strictly disjoint (Wave 1: `spec-core-and-contract-schema` vs. `acdd-yaml-specs-and-refs`; Wave 4: `spec-deltas` vs. `roadmap-display-and-schema-filters`).

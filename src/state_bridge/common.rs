@@ -4,8 +4,8 @@ use acdd_core::config::{Adapter, SpecConfig, ACDD_CONFIG_FILE};
 use acdd_core::errors::{ErrorCode, AcddError};
 use acdd_core::format::sha256_hex;
 use acdd_core::fs::checked_child;
-use acdd_core::git::primary_worktree_root;
-use acdd_core::path_policy::normalize_rel_path;
+use acdd_core::git::{git_common_dir, git_command, primary_worktree_root};
+use acdd_core::path_policy::{normalize_rel_path, WorkspacePathPolicy};
 use acdd_core::ports::{CompositeDomainProvider, DomainActionResult, DomainCheckReq, DomainProvider};
 use acdd_core::subsystems::SubsystemId;
 use acdd_index::db::reader::open_raw_confined_readonly;
@@ -16,7 +16,7 @@ use acdd_state::usecases::{
 };
 use rusqlite::Connection;
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -405,20 +405,103 @@ pub(super) fn collect_profile_dir_files(
     out
 }
 
+pub(super) fn effective_baseline_ref(baseline_ref: Option<&str>) -> &str {
+    baseline_ref
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !s.starts_with('-'))
+        .unwrap_or("HEAD")
+}
+
+pub(super) fn collect_git_diff_paths(
+    worktree: &Path,
+    policy: &WorkspacePathPolicy,
+    baseline: &str,
+    diff_filter: &str,
+    predicate: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    collect_git_diff_paths_raw(worktree, baseline, diff_filter, |norm| {
+        policy.is_candidate_included(norm) && predicate(norm)
+    })
+}
+
+fn collect_git_diff_paths_raw(
+    worktree: &Path,
+    baseline: &str,
+    diff_filter: &str,
+    predicate: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    if baseline.starts_with('-')
+        || (!worktree.join(".git").exists() && git_common_dir(worktree).is_err())
+    {
+        return Vec::new();
+    }
+    let Ok(out) = git_command(
+        worktree,
+        &[
+            "diff",
+            "--name-only",
+            diff_filter,
+            "--no-renames",
+            "-z",
+            baseline,
+            "--",
+        ],
+    ) else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    let mut paths = BTreeSet::new();
+    for raw in out.stdout.split(|b| *b == 0).filter(|b| !b.is_empty()) {
+        let rel = String::from_utf8_lossy(raw);
+        if let Some(norm) = normalize_rel_path(&rel) {
+            if predicate(&norm) {
+                paths.insert(norm);
+            }
+        }
+    }
+    paths.into_iter().collect()
+}
+
+/// Collect workspace-relative tracked changes against `baseline_ref` (or `HEAD`) plus untracked
+/// non-ignored files in `worktree`. Works uniformly for code, docs, workflows, and instructions.
+pub(super) fn collect_active_diff_paths(
+    worktree: &Path,
+    baseline_ref: Option<&str>,
+) -> BTreeSet<String> {
+    let baseline = effective_baseline_ref(baseline_ref);
+    let mut paths: BTreeSet<String> = collect_git_diff_paths_raw(
+        worktree,
+        baseline,
+        "--diff-filter=ACMR",
+        |norm| !norm.starts_with(".git/") && !norm.starts_with(".acdd/"),
+    )
+    .into_iter()
+    .collect();
+    if worktree.join(".git").exists() || git_common_dir(worktree).is_ok() {
+        if let Ok(out) = git_command(worktree, &["ls-files", "--others", "--exclude-standard", "-z"])
+        {
+            if out.status.success() {
+                for raw in out.stdout.split(|b| *b == 0).filter(|b| !b.is_empty()) {
+                    let rel = String::from_utf8_lossy(raw);
+                    if let Some(norm) = normalize_rel_path(&rel) {
+                        if !norm.starts_with(".git/") && !norm.starts_with(".acdd/") {
+                            paths.insert(norm);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    paths
+}
+
 pub(super) fn is_active_collection_spec_rel(rel: &str, col_cfg: &SpecConfig) -> bool {
     let Some(norm) = normalize_rel_path(rel) else {
         return false;
     };
-    if !norm.ends_with(".md")
-        || norm.contains("/archive/")
-        || matches!(
-            Path::new(&norm).file_name().and_then(|s| s.to_str()),
-            Some("README.md" | "AGENTS.md" | "CLAUDE.md")
-        )
-    {
-        return false;
-    }
-    col_cfg.matches_rel_path(&norm)
+    norm.ends_with(".md") && col_cfg.matches_rel_path(&norm) && !col_cfg.is_ignored_rel_path(&norm)
 }
 
 pub(super) fn compute_specs_digest(
@@ -459,7 +542,11 @@ pub(super) fn compute_specs_digest(
                 .into_iter()
                 .filter_entry(|e| {
                     !e.file_type().is_symlink()
-                        && !(e.file_type().is_dir() && e.file_name() == "archive")
+                        && !(e.depth() > 0
+                            && e.file_type().is_dir()
+                            && e.file_name()
+                                .to_str()
+                                .is_some_and(|name| col.is_ignored_dir_name(name)))
                 })
                 .filter_map(Result::ok)
             {
@@ -468,7 +555,7 @@ pub(super) fn compute_specs_digest(
                 };
                 if entry.file_type().is_file()
                     && entry.path().extension().and_then(|e| e.to_str()) == Some("md")
-                    && !matches!(name, "README.md" | "AGENTS.md" | "CLAUDE.md")
+                    && !col.is_ignored_entry_name(name)
                 {
                     if let Ok(rel) = entry.path().strip_prefix(worktree) {
                         let rel_str = rel.to_string_lossy().replace('\\', "/");

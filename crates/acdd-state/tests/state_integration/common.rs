@@ -3,7 +3,7 @@ use acdd_core::errors::AcddError;
 use acdd_core::git::git_command;
 use acdd_core::ids::{CommitOid, RunId, RunName, SubtaskRef, TaskRef, TreeOid, WorkerId};
 use acdd_core::ports::{
-    ActionCapability, CheckCapability, CompositeDomainProvider, DomainActionReq,
+    ActionCapability, CheckCapability, CompositeDomainProvider, ContextCapability, DomainActionReq,
     DomainActionResult, DomainCapabilities, DomainCheckOutcome, DomainCheckReq, DomainContextReq,
     DomainProvider, DomainToolDef, DomainToolOutput, DomainToolReq,
 };
@@ -25,7 +25,7 @@ use acdd_state::usecases::dto::{
 use acdd_state::usecases::{StateCommand, StateCommandOutput, StateEngine, StateEngineConfig};
 use anyhow::Result;
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -203,7 +203,8 @@ impl DomainProvider for MockHttpProvider {
                     input_schema: SchemaDef::object(),
                 },
             ],
-            context_lenses: BTreeSet::from(["endpoint_summary".to_owned()]),
+            context: vec![ContextCapability::simple("endpoint_summary")],
+            supports_collection_context: false,
             tools: vec![DomainToolDef {
                 name: "probe".to_owned(),
                 description: "Probe HTTP endpoint metadata".to_owned(),

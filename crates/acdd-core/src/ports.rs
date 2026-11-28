@@ -1,11 +1,12 @@
 use crate::errors::{AcddError, ErrorCode};
 use crate::ids::{GateId, NodeCursor, RunId, WorkerId};
 use crate::path_policy::WorkspacePathPolicy;
-use crate::schema::SchemaDef;
+use crate::schema::{AdditionalPropertiesDef, SchemaDef};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -67,6 +68,96 @@ pub struct CheckCapability {
     pub input_schema: SchemaDef,
 }
 
+/// Parsed canonical `context:` reference (`paths.<name>`, `specs.<name>`, or `<domain>.<name>`).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ContextRef {
+    /// Named path group lens (`paths.<name>`).
+    Paths(String),
+    /// Spec collection or built-in base selector lens (`specs.<name>`).
+    Specs(String),
+    /// Qualified domain lens (`<domain>.<name>`).
+    Domain {
+        /// Owning domain identifier.
+        domain: String,
+        /// Unqualified lens name within `domain`.
+        name: String,
+    },
+}
+
+impl ContextRef {
+    /// Parse a raw `<prefix>.<name>` context reference fail-closed.
+    pub fn parse(raw: &str) -> std::result::Result<Self, AcddError> {
+        let (domain, item) = split_qualified(raw, "context lens")?;
+        Ok(match domain {
+            "paths" => Self::Paths(item.to_owned()),
+            "specs" => Self::Specs(item.to_owned()),
+            _ => Self::Domain {
+                domain: domain.to_owned(),
+                name: item.to_owned(),
+            },
+        })
+    }
+
+    /// Render the canonical `<prefix>.<name>` wire string.
+    pub fn as_qualified_string(&self) -> String {
+        match self {
+            Self::Paths(name) => format!("paths.{name}"),
+            Self::Specs(name) => format!("specs.{name}"),
+            Self::Domain { domain, name } => format!("{domain}.{name}"),
+        }
+    }
+}
+
+impl fmt::Display for ContextRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Paths(name) => write!(f, "paths.{name}"),
+            Self::Specs(name) => write!(f, "specs.{name}"),
+            Self::Domain { domain, name } => write!(f, "{domain}.{name}"),
+        }
+    }
+}
+
+/// Scope selection policy for a [`ContextCapability`] when assembling `DomainContextReq.admitted_scope`.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextScopeMode {
+    /// Use full `admitted_scope` (including `extended_scope` and task fallback).
+    #[default]
+    Admitted,
+    /// Prefer `node.scope` when non-empty, falling back to `admitted_scope`.
+    NodeOnly,
+}
+
+/// Capability descriptor for a gate `context:` lens exported by a `DomainProvider`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ContextCapability {
+    /// Unqualified context lens name within the domain (`<lens>`).
+    pub name: String,
+    /// Scope selection policy (`admitted` or `node_only`).
+    #[serde(default)]
+    pub scope_mode: ContextScopeMode,
+    /// Optional default `profile.paths.<key>` lookup used to populate `lens_globs`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_paths_key: Option<String>,
+    /// Schema validating optional `with:` parameters passed to `provide_context`.
+    #[serde(default = "SchemaDef::object")]
+    pub input_schema: SchemaDef,
+}
+
+impl ContextCapability {
+    /// Construct a default `Admitted`-scope `ContextCapability` with an open object `input_schema`.
+    pub fn simple(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            scope_mode: ContextScopeMode::Admitted,
+            default_paths_key: None,
+            input_schema: SchemaDef::object(),
+        }
+    }
+}
+
 /// Optional MCP/CLI plugin tool exposed by an external `DomainProvider` as `<domain>_<name>`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -100,9 +191,12 @@ pub struct DomainCapabilities {
     /// Checks usable via `checks: [<domain>.<check>]`.
     #[serde(default)]
     pub checks: Vec<CheckCapability>,
-    /// Context lenses usable via `context: [<domain>.<lens>]`.
+    /// Context capabilities usable via `context: [<domain>.<lens>]` or `{ context, with }`.
     #[serde(default)]
-    pub context_lenses: BTreeSet<String>,
+    pub context: Vec<ContextCapability>,
+    /// Whether this provider handles `paths.<name>` and `specs.<name>` collection context lenses.
+    #[serde(default)]
+    pub supports_collection_context: bool,
     /// Optional plugin tools exposed as `<domain>_<name>`.
     #[serde(default)]
     pub tools: Vec<DomainToolDef>,
@@ -242,6 +336,9 @@ pub struct DomainContextReq {
     /// Owning Spec body and citation context used for Tier 1 direct ID/title matching.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub citation_text: Option<String>,
+    /// Optional `with:` parameters validated against `ContextCapability.input_schema`.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub params: Value,
 }
 
 /// Request context passed to `DomainProvider::call_tool`.
@@ -429,6 +526,7 @@ struct RegisteredPluginTool {
 pub struct CompositeDomainProvider {
     providers: BTreeMap<String, RegisteredProvider>,
     plugin_tools: BTreeMap<String, RegisteredPluginTool>,
+    collection_context_domain: Option<String>,
 }
 
 impl CompositeDomainProvider {
@@ -453,6 +551,17 @@ impl CompositeDomainProvider {
 
             let caps = provider.capabilities();
             validate_capabilities(&domain_id, &caps)?;
+            if caps.supports_collection_context {
+                if let Some(ref existing) = composite.collection_context_domain {
+                    return Err(AcddError::new(
+                        ErrorCode::WorkflowSchemaInvalid,
+                        format!(
+                            "duplicate collection context provider registered by domains '{existing}' and '{domain_id}'"
+                        ),
+                    ));
+                }
+                composite.collection_context_domain = Some(domain_id.clone());
+            }
 
             for tool in &caps.tools {
                 let full_name = format!("{domain_id}_{}", tool.name);
@@ -589,21 +698,65 @@ impl CompositeDomainProvider {
             .validate_value(params, &format!("checks.{qualified}"))
     }
 
-    /// Validate a qualified context lens reference (`<domain>.<lens>`) fail-closed.
-    pub fn validate_context_lens(&self, qualified: &str) -> std::result::Result<(), AcddError> {
-        let (domain, lens_name) = split_qualified(qualified, "context lens")?;
-        if matches!(domain, "paths" | "specs") {
-            let _ = self.active_provider("docs")?;
-            return Ok(());
-        }
-        let entry = self.active_provider(domain)?;
-        if !entry.capabilities.context_lenses.contains(lens_name) {
+    /// Return the `domain_id` of the registered provider declaring `supports_collection_context: true`, if any.
+    pub fn collection_context_domain(&self) -> Option<&str> {
+        self.collection_context_domain.as_deref()
+    }
+
+    fn active_collection_provider<'s>(
+        &'s self,
+        ctx_ref: &ContextRef,
+    ) -> std::result::Result<&'s RegisteredProvider, AcddError> {
+        let Some(ref domain) = self.collection_context_domain else {
             return Err(AcddError::new(
                 ErrorCode::DomainCapabilityUnavailable,
-                format!("context lens '{qualified}' is not provided by domain '{domain}'"),
+                format!(
+                    "no registered domain provider supports collection context '{ctx_ref}'"
+                ),
             ));
+        };
+        self.active_provider(domain)
+    }
+
+    /// Look up the [`ContextCapability`] metadata for a [`ContextRef`] (`Ok(None)` for `paths.*` / `specs.*`).
+    pub fn context_capability(
+        &self,
+        ctx_ref: &ContextRef,
+    ) -> std::result::Result<Option<&ContextCapability>, AcddError> {
+        match ctx_ref {
+            ContextRef::Paths(_) | ContextRef::Specs(_) => {
+                let _ = self.active_collection_provider(ctx_ref)?;
+                Ok(None)
+            }
+            ContextRef::Domain { domain, name } => {
+                let qualified = ctx_ref.as_qualified_string();
+                let (_, _, cap) = self.resolve_provider_capability(
+                    &qualified,
+                    "context lens",
+                    |c| &c.context,
+                    |c| &c.name,
+                )?;
+                let _ = (domain, name);
+                Ok(Some(cap))
+            }
         }
-        Ok(())
+    }
+
+    /// Validate a [`ContextRef`] and its optional `with:` parameters fail-closed.
+    pub fn validate_context_ref(
+        &self,
+        ctx_ref: &ContextRef,
+        params: &Value,
+    ) -> std::result::Result<(), AcddError> {
+        match self.context_capability(ctx_ref)? {
+            None => {
+                let schema = collection_context_input_schema();
+                validate_context_params(&schema, params, &format!("context.{ctx_ref}.with"))
+            }
+            Some(cap) => {
+                validate_context_params(&cap.input_schema, params, &format!("context.{ctx_ref}.with"))
+            }
+        }
     }
 
     /// Validate that a plugin tool name `<domain>_<name>` is registered and its domain is enabled.
@@ -692,16 +845,20 @@ impl CompositeDomainProvider {
         entry.provider.observe_freshness(check_name, params, req)
     }
 
-    /// Validate and fetch `context: [<domain>.<lens>]` from the owning enabled provider.
+    /// Validate and fetch `context:` (`paths.<name>`, `specs.<name>`, or `<domain>.<lens>`) from the owning enabled provider.
     pub fn provide_context(&self, qualified: &str, req: &DomainContextReq) -> Result<Value> {
-        self.validate_context_lens(qualified)?;
-        let (domain, lens_name) = split_qualified(qualified, "context lens")?;
-        if matches!(domain, "paths" | "specs") {
-            let entry = self.active_provider("docs")?;
-            return entry.provider.provide_context(qualified, req);
+        let ctx_ref = ContextRef::parse(qualified)?;
+        self.validate_context_ref(&ctx_ref, &req.params)?;
+        match &ctx_ref {
+            ContextRef::Paths(_) | ContextRef::Specs(_) => {
+                let entry = self.active_collection_provider(&ctx_ref)?;
+                entry.provider.provide_context(qualified, req)
+            }
+            ContextRef::Domain { domain, name } => {
+                let entry = self.active_provider(domain)?;
+                entry.provider.provide_context(name, req)
+            }
         }
-        let entry = self.active_provider(domain)?;
-        entry.provider.provide_context(lens_name, req)
     }
 
     /// Validate and invoke an external plugin tool `<domain>_<name>`.
@@ -784,8 +941,24 @@ fn validate_capabilities(
             .validate_schema(&format!("domains.{domain_id}.checks.{}", check.name))?;
     }
 
-    for lens in &caps.context_lenses {
-        validate_component_name(lens, "context lens name")?;
+    let mut seen_context = BTreeSet::new();
+    for ctx_cap in &caps.context {
+        validate_component_name(&ctx_cap.name, "context capability name")?;
+        if !seen_context.insert(&ctx_cap.name) {
+            return Err(AcddError::new(
+                ErrorCode::WorkflowSchemaInvalid,
+                format!(
+                    "duplicate context capability '{}.{}'",
+                    domain_id, ctx_cap.name
+                ),
+            ));
+        }
+        if let Some(ref key) = ctx_cap.default_paths_key {
+            validate_component_name(key, "default_paths_key")?;
+        }
+        ctx_cap
+            .input_schema
+            .validate_schema(&format!("domains.{domain_id}.context.{}", ctx_cap.name))?;
     }
 
     let mut seen_tools = BTreeSet::new();
@@ -821,6 +994,24 @@ fn split_qualified<'a>(
         ));
     }
     Ok((domain, item))
+}
+
+fn collection_context_input_schema() -> SchemaDef {
+    let mut schema = SchemaDef::object();
+    schema.additional_properties = Some(AdditionalPropertiesDef::Boolean(false));
+    schema
+}
+
+fn validate_context_params(
+    schema: &SchemaDef,
+    params: &Value,
+    path: &str,
+) -> std::result::Result<(), AcddError> {
+    if params.is_null() && schema.schema_type == "object" {
+        schema.validate_value(&json!({}), path)
+    } else {
+        schema.validate_value(params, path)
+    }
 }
 
 #[cfg(test)]
@@ -890,8 +1081,12 @@ mod tests {
             })
         }
 
-        fn provide_context(&self, lens: &str, _req: &DomainContextReq) -> Result<Value> {
-            Ok(json!({ "lens": format!("{}.{lens}", self.domain) }))
+        fn provide_context(&self, lens: &str, req: &DomainContextReq) -> Result<Value> {
+            if req.params.is_null() {
+                Ok(json!({ "lens": format!("{}.{lens}", self.domain) }))
+            } else {
+                Ok(json!({ "lens": format!("{}.{lens}", self.domain), "params": req.params }))
+            }
         }
 
         fn call_tool(
@@ -929,7 +1124,8 @@ mod tests {
                     name: "health".to_owned(),
                     input_schema: SchemaDef::object(),
                 }],
-                context_lenses: BTreeSet::from(["endpoints".to_owned()]),
+                context: vec![ContextCapability::simple("endpoints")],
+                supports_collection_context: false,
                 tools: tool_names
                     .iter()
                     .map(|name| DomainToolDef {
@@ -1075,6 +1271,7 @@ mod tests {
             baseline_ref: None,
             lens_globs: Vec::new(),
             citation_text: None,
+            params: Value::Null,
         };
         let tool_req = DomainToolReq {
             workspace_root: PathBuf::from("/repo"),
@@ -1294,5 +1491,90 @@ mod tests {
             assert_eq!(run_res, expected, "run_check({qualified})");
             assert_eq!(obs_res, expected, "observe_freshness({qualified})");
         }
+    }
+
+    #[test]
+    fn context_input_schema_validation_and_param_forwarding() {
+        let docs_provider: Arc<dyn DomainProvider> = Arc::new(MockProvider {
+            domain: "docs".to_owned(),
+            caps: DomainCapabilities {
+                supports_collection_context: true,
+                ..DomainCapabilities::default()
+            },
+        });
+        let custom_provider: Arc<dyn DomainProvider> = Arc::new(MockProvider {
+            domain: "http".to_owned(),
+            caps: DomainCapabilities {
+                context: vec![ContextCapability {
+                    name: "endpoints".to_owned(),
+                    scope_mode: ContextScopeMode::Admitted,
+                    default_paths_key: None,
+                    input_schema: strict_url_schema(),
+                }],
+                ..DomainCapabilities::default()
+            },
+        });
+        let composite = CompositeDomainProvider::with_module_flags(
+            vec![docs_provider, custom_provider],
+            BTreeMap::from([("docs".to_owned(), true), ("http".to_owned(), true)]),
+        )
+        .unwrap();
+
+        // (a) Unknown `with:` keys fail closed on `specs.*` and `paths.*`.
+        for lens in ["specs.memories", "paths.docs"] {
+            let ctx_ref = ContextRef::parse(lens).unwrap();
+            assert!(
+                composite.validate_context_ref(&ctx_ref, &json!({})).is_ok(),
+                "{lens} should accept empty params"
+            );
+            let err = composite
+                .validate_context_ref(&ctx_ref, &json!({"unexpected": true}))
+                .unwrap_err();
+            assert_eq!(
+                err.code,
+                ErrorCode::WorkflowSchemaInvalid,
+                "{lens} must reject unknown with: keys"
+            );
+        }
+
+        // (b) Custom `ContextCapability.input_schema` rejects bad `with:` params and
+        // forwards valid `with:` params into `DomainContextReq.params`.
+        let custom_ref = ContextRef::parse("http.endpoints").unwrap();
+        let bad_err = composite
+            .validate_context_ref(&custom_ref, &json!({"wrong": 1}))
+            .unwrap_err();
+        assert_eq!(bad_err.code, ErrorCode::WorkflowSchemaInvalid);
+        let valid_params = json!({"url": "https://example.test"});
+        composite
+            .validate_context_ref(&custom_ref, &valid_params)
+            .expect("valid custom context params must pass");
+
+        let mut ctx_req = DomainContextReq {
+            run_id: RunId::new("r1").unwrap(),
+            node_cursor: NodeCursor::root(vec![GateId::new("build").unwrap()]).unwrap(),
+            gate_id: GateId::new("build").unwrap(),
+            workspace_root: PathBuf::from("/repo"),
+            worktree: PathBuf::from("/repo"),
+            admitted_scope: vec!["src/**".to_owned()],
+            target: None,
+            max_bytes: 4096,
+            path_policy: WorkspacePathPolicy::default(),
+            baseline_ref: None,
+            lens_globs: vec![],
+            citation_text: None,
+            params: valid_params.clone(),
+        };
+        let out = composite
+            .provide_context("http.endpoints", &ctx_req)
+            .unwrap();
+        assert_eq!(out["params"], valid_params);
+        ctx_req.params = json!({});
+        let missing_url_err = composite
+            .provide_context("http.endpoints", &ctx_req)
+            .unwrap_err();
+        assert_eq!(
+            AcddError::from_anyhow(&missing_url_err).unwrap().code,
+            ErrorCode::WorkflowSchemaInvalid
+        );
     }
 }

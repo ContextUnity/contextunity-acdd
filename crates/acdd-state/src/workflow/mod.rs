@@ -11,8 +11,8 @@ pub use inherit::{
     resolve_workflow_ref_with_dirs,
 };
 pub use schema::{
-    CommandDef, GateDef, GateDispatchInfo, ProofDef, ProofKind, ResolvedWorkflow, ResourceLimits,
-    RoleDef, RoleExecutionMode,
+    CommandDef, ContextEntry, GateDef, GateDispatchInfo, ProofDef, ProofKind, ResolvedWorkflow,
+    ResourceLimits, RoleDef, RoleExecutionMode,
 };
 pub use shell_template::{render_command_with_scope_target, render_command_with_test_filter};
 pub use validate::{
