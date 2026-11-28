@@ -41,21 +41,20 @@ pub(super) struct RecoveredArchiveGitState {
     pub(super) current_tree: TreeOid,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn probe_interrupted_archive(
     config: &StateEngineConfig,
     backend: &dyn StateBackend,
     snapshot: &RunGraphSnapshot,
     node: &GateNodeRecord,
     machine_gate: &MachineGateDef,
+    target_worktree: &Path,
     req: &SubmitReq,
     policy: &WorkspacePathPolicy,
 ) -> Result<Option<RecoveredArchiveGitState>, AcddError> {
     if !machine_gate.save.archive || snapshot.run.is_ephemeral {
         return Ok(None);
     }
-    let target_worktree =
-        super::resolve_node_worktree(config, &snapshot.run, node, req.worktree.as_deref());
-    let target_worktree = target_worktree.as_path();
     let Some(ref spec_rel) = snapshot.run.spec_path else {
         return Ok(None);
     };

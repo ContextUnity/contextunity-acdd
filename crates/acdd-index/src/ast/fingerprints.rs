@@ -114,6 +114,7 @@ pub(crate) struct CallableMetricsTracker {
     current_depth: usize,
     pub(crate) statements: Vec<StatementFingerprint>,
     scratch: String,
+    skeleton_scratch: String,
     stack: Vec<MetricsNodeFrame>,
     norm_parents: Vec<(bool, Option<usize>)>,
 }
@@ -183,14 +184,21 @@ impl CallableMetricsTracker {
             && !IGNORED_STMTS.contains(&kind)
             && !CONTROL_CLAUSES.contains(&kind)
         {
-            let token_count =
-                normalize_statement_into(node, source, &mut self.scratch, &mut self.norm_parents);
+            let token_count = normalize_statement_into(
+                node,
+                source,
+                &mut self.scratch,
+                &mut self.skeleton_scratch,
+                &mut self.norm_parents,
+            );
             if token_count > 0 {
                 let line = node.start_position().row + offset + 1;
                 let end_line = (node.end_position().row + offset + 1).max(line);
                 let hash = stable_hash64(self.scratch.as_str()) as u64;
+                let skeleton_hash = stable_hash64(self.skeleton_scratch.as_str()) as u64;
                 self.statements.push(StatementFingerprint {
                     hash,
+                    skeleton_hash,
                     line,
                     end_line,
                     token_count,
@@ -402,8 +410,38 @@ impl<'a> IdentSlots<'a> {
     }
 }
 
+fn literal_skeleton_placeholder(kind: &str) -> Option<&'static str> {
+    if kind == "string_literal"
+        || kind == "raw_string_literal"
+        || kind == "char_literal"
+        || kind == "string"
+        || kind == "template_string"
+        || kind == "interpreted_string_literal"
+        || kind == "raw_string"
+    {
+        return Some("$str");
+    }
+    if kind == "integer_literal"
+        || kind == "float_literal"
+        || kind == "number"
+        || kind == "numeric_literal"
+        || kind == "int_literal"
+    {
+        return Some("$num");
+    }
+    None
+}
+
+fn push_skeleton_token(skeleton_out: &mut String, token: &str) {
+    if !skeleton_out.is_empty() {
+        skeleton_out.push(' ');
+    }
+    skeleton_out.push_str(token);
+}
+
 fn push_normalized_token<'a>(
     out: &mut String,
+    skeleton_out: Option<&mut String>,
     kind: &str,
     node_id: usize,
     part: &'a str,
@@ -417,8 +455,17 @@ fn push_normalized_token<'a>(
         let slot = ident_slots.slot_for(part);
         use std::fmt::Write;
         let _ = write!(out, "$v{slot}");
+        if let Some(skel) = skeleton_out {
+            if !skel.is_empty() {
+                skel.push(' ');
+            }
+            let _ = write!(skel, "$v{slot}");
+        }
     } else {
         out.push_str(part);
+        if let Some(skel) = skeleton_out {
+            push_skeleton_token(skel, part);
+        }
     }
 }
 
@@ -426,14 +473,17 @@ fn normalize_statement_into(
     stmt: Syntax<'_>,
     source: &str,
     out: &mut String,
+    skeleton_out: &mut String,
     parents: &mut Vec<(bool, Option<usize>)>,
 ) -> usize {
     out.clear();
+    skeleton_out.clear();
     parents.clear();
     let mut token_count = 0usize;
     let mut ident_slots = IdentSlots::new();
     let mut cursor = stmt.walk();
     let stmt_id = stmt.id();
+    let mut inside_masked_literal_depth = 0usize;
     loop {
         let node = cursor.node();
         let node_id = node.id();
@@ -443,15 +493,55 @@ fn normalize_statement_into(
                 && (STATEMENT_CONTAINERS.contains(&kind)
                     || CONTROL_CLAUSES.contains(&kind)
                     || NESTED_DECLS.contains(&kind)));
+        let entered_literal = !skip
+            && inside_masked_literal_depth == 0
+            && literal_skeleton_placeholder(kind).is_some();
+        if entered_literal {
+            if let Some(placeholder) = literal_skeleton_placeholder(kind) {
+                push_skeleton_token(skeleton_out, placeholder);
+            }
+            inside_masked_literal_depth = 1;
+        } else if !skip && inside_masked_literal_depth > 0 {
+            inside_masked_literal_depth += 1;
+        }
         if !skip && node.child_count() == 0 {
             let raw = source[node.byte_range()].trim();
             if !raw.is_empty() {
                 if matches!(raw, ")" | "]" | "}") && out.ends_with(" ,") {
                     out.truncate(out.len() - 2);
                 }
+                if inside_masked_literal_depth == 0
+                    && matches!(raw, ")" | "]" | "}")
+                    && skeleton_out.ends_with(" ,")
+                {
+                    skeleton_out.truncate(skeleton_out.len() - 2);
+                }
                 let parent_rule = parents.last().copied().unwrap_or((false, None));
-                for part in raw.split_whitespace() {
-                    push_normalized_token(out, kind, node_id, part, parent_rule, &mut ident_slots);
+                let skel_ref = (inside_masked_literal_depth == 0).then_some(&mut *skeleton_out);
+                if let Some(skel) = skel_ref {
+                    for part in raw.split_whitespace() {
+                        push_normalized_token(
+                            out,
+                            Some(skel),
+                            kind,
+                            node_id,
+                            part,
+                            parent_rule,
+                            &mut ident_slots,
+                        );
+                    }
+                } else {
+                    for part in raw.split_whitespace() {
+                        push_normalized_token(
+                            out,
+                            None,
+                            kind,
+                            node_id,
+                            part,
+                            parent_rule,
+                            &mut ident_slots,
+                        );
+                    }
                 }
                 if !matches!(raw, "{" | "}" | "(" | ")" | "[" | "]" | ";" | ",") {
                     token_count += 1;
@@ -461,6 +551,9 @@ fn normalize_statement_into(
         if !skip && cursor.goto_first_child() {
             parents.push(normalization_parent_rule(node, kind));
             continue;
+        }
+        if !skip && inside_masked_literal_depth > 0 {
+            inside_masked_literal_depth -= 1;
         }
         loop {
             if cursor.node().id() == stmt_id {
@@ -473,6 +566,7 @@ fn normalize_statement_into(
                 return token_count;
             }
             parents.pop();
+            inside_masked_literal_depth = inside_masked_literal_depth.saturating_sub(1);
         }
     }
 }

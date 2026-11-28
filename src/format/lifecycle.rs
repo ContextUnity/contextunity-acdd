@@ -17,10 +17,23 @@ pub fn render_claim_markdown(claim: &ClaimResp) -> String {
 
 /// Render a [`VerifyResp`] as readable Markdown (`ADR-0006`).
 pub fn render_verify_markdown(verify: &VerifyResp) -> String {
-    super::core::render_serializable(
+    let mut out = super::core::render_serializable(
         verify,
         &format!("Gate Verification: {}", verify.node_cursor),
-    )
+    );
+    let passed_diags: Vec<&str> = verify
+        .check_results
+        .iter()
+        .filter(|c| c.passed)
+        .flat_map(|c| c.diagnostics.iter().map(String::as_str))
+        .collect();
+    if !passed_diags.is_empty() {
+        out.push_str("\n## Diff X-Ray Diagnostics\n\n");
+        for diag in passed_diags {
+            out.push_str(&format!("- {diag}\n"));
+        }
+    }
+    out
 }
 
 /// Render a [`SubmitResp`] as readable Markdown (`ADR-0006`).

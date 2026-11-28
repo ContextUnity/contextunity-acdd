@@ -1,29 +1,19 @@
-use super::inspect::direct_call_summary;
-use super::preview::{first_docstring_sentence, resolve_indexed_text_match, source_preview};
-use super::test_discovery::tests_paged_with_path;
-use super::types::SearchOptions;
-use crate::db::paging;
+use super::projection::{
+    query_typed_ranked_page, query_typed_window_page, typed_search_columns, SearchRowTrailer,
+    TypedSearchPage,
+};
 use crate::db::reader::{
     selectors::{path_bounds, strip_selector_uri_prefix},
-    sql::{rows, QueryBudget},
+    sql::QueryBudget,
 };
-use crate::db::source::VerifiedSourceCache;
+use crate::db::symbols::types::SearchOptions;
 use crate::models::{
     details::NodeDetailKey,
-    stable_hash64,
     tags::{EdgeKind, LanguageId, NodeKind},
 };
-use acdd_core::response::{
-    Detail, QueryOptions, ResponsePolicy, SourceOptions, SymbolClassification,
-};
-use anyhow::{bail, Context, Result};
+use acdd_core::response::{QueryOptions, SymbolClassification};
+use anyhow::{bail, Result};
 use rusqlite::{Connection, ToSql};
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use std::{
-    collections::{BTreeMap, HashMap},
-    path::Path,
-};
 
 const RRF_K: &str = "60.0";
 const RRF_STRUCTURAL_WEIGHT: &str = "2.0";
@@ -32,108 +22,6 @@ const RRF_AND_MATCH_WEIGHT: &str = "1.0";
 const RRF_GRAPH_WEIGHT: &str = "0.75";
 const RRF_CANDIDATE_LIMIT: usize = 500;
 const GRAPH_DEGREE_WINDOW: usize = 50;
-
-#[derive(Deserialize, Serialize)]
-struct SearchHitDto {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    match_reason: Option<String>,
-    #[serde(default, skip_serializing)]
-    match_rank: Option<Value>,
-    #[serde(default, skip_serializing)]
-    bm25_rank: Option<Value>,
-    #[serde(default, skip_serializing)]
-    rrf_score: Option<Value>,
-    #[serde(flatten)]
-    fields: BTreeMap<String, Value>,
-}
-
-#[derive(Deserialize, Serialize)]
-struct RankedSearchHitDto {
-    #[serde(default, skip_serializing)]
-    search_total: Option<Value>,
-    #[serde(flatten)]
-    fields: BTreeMap<String, Value>,
-}
-
-#[derive(Deserialize, Serialize)]
-struct InspectSelectorDto {
-    selector: String,
-    show_source: bool,
-}
-
-#[derive(Serialize)]
-struct SourcePreviewWindowDto {
-    start_line: usize,
-    end_line: usize,
-    body_lines: usize,
-    has_more: bool,
-}
-
-#[derive(Deserialize, Serialize)]
-struct SearchNavigationItemDto {
-    id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    kind: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    name: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    qualname: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    path: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    line: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    end_line: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    language: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    match_reason: Option<String>,
-    #[serde(default)]
-    signature: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    inspect_selector: Option<InspectSelectorDto>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    is_test: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    classification: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    docstring_first_sentence: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    match_snippet: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    graph_pulse: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    source: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    source_preview: Option<Value>,
-    #[serde(flatten)]
-    fields: BTreeMap<String, Value>,
-}
-
-struct SearchSourceCache<'a> {
-    conn: &'a Connection,
-    root: &'a Path,
-    files: HashMap<String, Option<String>>,
-    loader: VerifiedSourceCache,
-}
-
-impl<'a> SearchSourceCache<'a> {
-    fn new(conn: &'a Connection, root: &'a Path) -> Self {
-        Self {
-            conn,
-            root,
-            files: HashMap::new(),
-            loader: VerifiedSourceCache::new(),
-        }
-    }
-
-    fn read(&mut self, path: &str) -> Option<&str> {
-        self.files
-            .entry(path.to_owned())
-            .or_insert_with(|| self.loader.read(self.conn, self.root, path).ok())
-            .as_deref()
-    }
-}
 
 fn fts_tokens(pattern: &str) -> Vec<&str> {
     pattern
@@ -214,7 +102,7 @@ fn run_exact_search_query(
     conn: &Connection,
     ctx: &ExactSearchContext<'_>,
     ranked: bool,
-) -> Result<Value> {
+) -> Result<TypedSearchPage> {
     let ExactSearchContext {
         columns,
         pattern,
@@ -262,7 +150,7 @@ fn run_exact_search_query(
                 FROM {from}
                 LEFT JOIN graph_ranked gr ON gr.node_id=n.node_id
                 WHERE {where_clause}
-            ) SELECT {columns},s.match_rank,s.rrf_score,r.search_total
+            ) SELECT {columns},s.match_rank,r.search_total
             FROM scored s
             JOIN nodes n ON n.node_id=s.node_id
             JOIN path_dictionary pd ON pd.path_id=n.path_id
@@ -271,7 +159,7 @@ fn run_exact_search_query(
         )
     } else {
         format!(
-            "SELECT {columns},0 AS match_rank,0.0 AS bm25_rank FROM {from} WHERE {where_clause} ORDER BY pd.path,n.line,n.id"
+            "SELECT {columns},0 AS match_rank FROM {from} WHERE {where_clause} ORDER BY pd.path,n.line,n.id"
         )
     };
     let mut params: Vec<&dyn ToSql> = Vec::with_capacity(8);
@@ -288,9 +176,9 @@ fn run_exact_search_query(
         &classification_code,
     ]);
     if ranked {
-        ranked_search_page(conn, &sql, &params, options)
+        query_typed_ranked_page(conn, &sql, &params, options, SearchRowTrailer::Rank)
     } else {
-        paging::query(conn, &sql, &params, options)
+        query_typed_window_page(conn, &sql, &params, options, SearchRowTrailer::Rank)
     }
 }
 
@@ -298,7 +186,7 @@ fn run_wildcard_search_query(
     conn: &Connection,
     pattern: &str,
     ctx: &ExactSearchContext<'_>,
-) -> Result<Value> {
+) -> Result<TypedSearchPage> {
     let ExactSearchContext {
         columns,
         kind,
@@ -347,11 +235,11 @@ fn run_wildcard_search_query(
                 FROM pre_scored p
                 LEFT JOIN graph_ranked gr ON gr.node_id=p.node_id
                 CROSS JOIN result_total t
-            ) SELECT {columns},CASE WHEN c.match_rank=1 THEN 'name_pattern' ELSE 'qualified_pattern' END AS match_reason,c.rrf_score,c.search_total
+            ) SELECT {columns},CASE WHEN c.match_rank=1 THEN 'name_pattern' ELSE 'qualified_pattern' END AS match_reason,c.search_total
             FROM scored c JOIN nodes n ON n.node_id=c.node_id JOIN path_dictionary pd ON pd.path_id=n.path_id
             ORDER BY c.rrf_score DESC,c.match_rank ASC,pd.path ASC,n.line ASC,n.id ASC"
         );
-        return ranked_search_page(
+        return query_typed_ranked_page(
             conn,
             &sql,
             &[
@@ -365,10 +253,11 @@ fn run_wildcard_search_query(
                 &classification_code,
             ],
             options,
+            SearchRowTrailer::Reason,
         );
     }
     let scope_filter = scope_filter_sql(2, 3, 6, 7);
-    paging::query(
+    query_typed_window_page(
         conn,
         &format!(
             "SELECT {columns},CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 'name_pattern' ELSE 'qualified_pattern' END match_reason FROM nodes n JOIN path_dictionary pd ON pd.path_id=n.path_id WHERE (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\') AND {scope_filter} ORDER BY CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 500 ELSE 0 END DESC,pd.path,n.line,n.id"
@@ -383,6 +272,7 @@ fn run_wildcard_search_query(
             &classification_code,
         ],
         options,
+        SearchRowTrailer::Reason,
     )
 }
 
@@ -399,7 +289,7 @@ fn try_type_filter_search(
         bool,
     ),
     options: &QueryOptions,
-) -> Result<Option<Value>> {
+) -> Result<Option<TypedSearchPage>> {
     let Some((field, value)) = pattern
         .strip_prefix("returns:")
         .map(|value| ("return", value))
@@ -430,7 +320,7 @@ fn try_type_filter_search(
         NodeKind::Function.as_str(),
         NodeKind::Method.as_str(),
     );
-    let nodes = paging::query(
+    let page = query_typed_window_page(
         conn,
         &sql,
         &[
@@ -443,18 +333,19 @@ fn try_type_filter_search(
             &classification_code,
         ],
         options,
+        SearchRowTrailer::None,
     )?;
-    Ok(Some(json!({"pattern":pattern,"nodes":nodes})))
+    Ok(Some(page))
 }
 
 fn try_default_exact_search(
     conn: &Connection,
     pattern: &str,
     exact_ctx: &ExactSearchContext<'_>,
-) -> Result<Option<Value>> {
+) -> Result<Option<TypedSearchPage>> {
     let candidates = run_exact_search_query(conn, exact_ctx, true)?;
     let tokens = fts_tokens(pattern);
-    let has_type_match = if !tokens.is_empty() && candidates["total"].as_u64() != Some(0) {
+    let has_type_match = if !tokens.is_empty() && candidates.total != Some(0) {
         let term = |prefix| {
             tokens
                 .iter()
@@ -485,15 +376,14 @@ fn try_default_exact_search(
     } else {
         false
     };
-    Ok((candidates["total"].as_u64() != Some(0) && !has_type_match).then_some(candidates))
+    Ok((candidates.total != Some(0) && !has_type_match).then_some(candidates))
 }
 
-/// Search indexed symbols using one bounded options contract.
-pub fn search_with_options(
+pub(super) fn search_typed(
     conn: &Connection,
     pattern: &str,
     options: &SearchOptions<'_>,
-) -> Result<Value> {
+) -> Result<(String, TypedSearchPage)> {
     let SearchOptions {
         kind,
         classification,
@@ -532,11 +422,11 @@ pub fn search_with_options(
         bail!("pattern must contain a symbol fragment, or use '*' with a path, kind, or classification scope");
     }
     let (path_start, path_end) = path_bounds(path);
-    let columns = paging::nodes_with_path("n", options.detail, "pd.path");
-    if let Some(res) = try_type_filter_search(
+    let columns = typed_search_columns(options.detail);
+    if let Some(page) = try_type_filter_search(
         conn,
         pattern,
-        &columns,
+        columns,
         (
             kind,
             classification_code,
@@ -547,10 +437,10 @@ pub fn search_with_options(
         ),
         options,
     )? {
-        return Ok(res);
+        return Ok((pattern.to_owned(), page));
     }
     let exact_ctx = ExactSearchContext {
-        columns: &columns,
+        columns,
         pattern,
         kind,
         classification_code,
@@ -565,7 +455,7 @@ pub fn search_with_options(
     } else {
         None
     };
-    let mut nodes = if let Some(candidates) = default_exact {
+    let page = if let Some(candidates) = default_exact {
         candidates
     } else if exact && pattern != "*" {
         run_exact_search_query(conn, &exact_ctx, false)?
@@ -653,7 +543,7 @@ pub fn search_with_options(
                 FROM matched_ranks m
                 LEFT JOIN pre_scored p ON p.node_id=m.node_id
                 LEFT JOIN graph_ranked gr ON gr.node_id=m.node_id
-            ) SELECT {columns},c.match_rank,c.rrf_score,t.search_total
+            ) SELECT {columns},c.match_rank,t.search_total
             FROM scored c JOIN nodes n ON n.node_id=c.node_id JOIN path_dictionary pd ON pd.path_id=n.path_id
             CROSS JOIN result_total t
             ORDER BY c.module_text ASC,c.rrf_score DESC,c.match_rank ASC,pd.path ASC,n.line ASC,n.id ASC"
@@ -664,7 +554,7 @@ pub fn search_with_options(
             !pattern.starts_with('@') && pattern.chars().any(char::is_whitespace);
         let apply_and_bonus = i64::from(is_natural_query && terms.len() > 1);
         let run_query = |query: &str, and_bonus: i64| {
-            ranked_search_page(
+            query_typed_ranked_page(
                 conn,
                 &sql,
                 &[
@@ -681,6 +571,7 @@ pub fn search_with_options(
                     &classification_code,
                 ],
                 options,
+                SearchRowTrailer::Rank,
             )
         };
         if is_natural_query {
@@ -688,339 +579,12 @@ pub fn search_with_options(
         } else {
             let rows = run_query(&and_query, 0)?;
             // An exhausted page must not switch a matching AND query to OR results.
-            if terms.len() > 1 && !pattern.starts_with('@') && rows["total"] == 0 {
+            if terms.len() > 1 && !pattern.starts_with('@') && rows.total == Some(0) {
                 run_query(&or_query, 0)?
             } else {
                 rows
             }
         }
     };
-    if let Some(items) = nodes["items"].as_array_mut() {
-        for item in items {
-            let mut hit: SearchHitDto =
-                serde_json::from_value(item.clone()).context("invalid search result")?;
-            let _ = (&hit.bm25_rank, &hit.rrf_score);
-            if options.detail == Detail::Compact
-                && hit.match_reason.as_deref() == Some("name_pattern")
-            {
-                hit.match_reason = None;
-            }
-            if let Some(rank) = hit.match_rank.take() {
-                let reason = match rank.as_u64() {
-                    Some(0) => "exact_name",
-                    Some(1) => "name_prefix",
-                    Some(2) => "exact_qualified_name",
-                    Some(3) => "name_fragment",
-                    _ => "indexed_text",
-                };
-                if options.detail == Detail::Full || !matches!(rank.as_u64(), Some(0..=1 | 3)) {
-                    hit.match_reason = Some(reason.to_owned());
-                }
-            }
-            *item = serde_json::to_value(hit)?;
-        }
-    }
-    Ok(json!({"pattern":pattern,"nodes":nodes}))
-}
-
-fn ranked_search_page(
-    conn: &Connection,
-    sql: &str,
-    params: &[&dyn ToSql],
-    options: &QueryOptions,
-) -> Result<Value> {
-    let generation = paging::generation(conn, options)?;
-    let limit = i64::try_from(options.limit.saturating_add(1))
-        .context("search limit exceeds SQLite integer range")?;
-    let offset =
-        i64::try_from(options.offset).context("search offset exceeds SQLite integer range")?;
-    let mut bindings = params.to_vec();
-    bindings.extend([&limit as &dyn ToSql, &offset]);
-    let limit_param = params.len() + 1;
-    let mut items = rows(
-        conn,
-        &format!("{sql} LIMIT ?{} OFFSET ?{}", limit_param, limit_param + 1),
-        &bindings,
-        options.limit.saturating_add(1),
-    )?;
-    let total = if let Some(total) = items.first().and_then(|item| item.get("search_total")) {
-        total.clone()
-    } else if options.offset == 0 {
-        json!(0)
-    } else {
-        let first_limit = 1_i64;
-        let first_offset = 0_i64;
-        let mut first_page_bindings = params.to_vec();
-        first_page_bindings.extend([&first_limit as &dyn ToSql, &first_offset as &dyn ToSql]);
-        let first_page = rows(
-            conn,
-            &format!(
-                "SELECT * FROM ({sql}) LIMIT ?{} OFFSET ?{}",
-                params.len() + 1,
-                params.len() + 2
-            ),
-            &first_page_bindings,
-            1,
-        )?;
-        first_page
-            .first()
-            .and_then(|item| item.get("search_total"))
-            .cloned()
-            .unwrap_or_else(|| json!(0))
-    };
-    for item in &mut items {
-        let hit: RankedSearchHitDto =
-            serde_json::from_value(item.clone()).context("invalid search result")?;
-        let _ = &hit.search_total;
-        *item = serde_json::to_value(hit)?;
-    }
-    let has_more = items.len() > options.limit;
-    items.truncate(options.limit);
-    Ok(json!({
-        "total": total,
-        "offset": options.offset,
-        "limit": options.limit,
-        "has_more": has_more,
-        "next_offset": if has_more { Some(options.offset.saturating_add(items.len())) } else { None },
-        "items": items,
-        "generation": generation
-    }))
-}
-
-fn apply_indexed_text_match_preview(
-    sources: &mut SearchSourceCache<'_>,
-    item: &mut SearchNavigationItemDto,
-    pattern: &str,
-    include_preview: bool,
-    preview_bytes_per_hit: usize,
-) -> Option<(String, SourcePreviewWindowDto)> {
-    let path = item.path.clone()?;
-    let start = item
-        .line
-        .as_ref()
-        .and_then(Value::as_u64)
-        .and_then(|v| usize::try_from(v).ok())?;
-    let end = item
-        .end_line
-        .as_ref()
-        .and_then(Value::as_u64)
-        .and_then(|v| usize::try_from(v).ok())?;
-    let text = sources.read(&path)?;
-    let matched = resolve_indexed_text_match(text, start, end, pattern, preview_bytes_per_hit)?;
-    item.line = Some(json!(matched.line));
-    item.match_snippet = Some(matched.snippet);
-    if !include_preview {
-        return None;
-    }
-    let (preview_src, win_start, win_end) = matched.preview?;
-    Some((
-        preview_src,
-        SourcePreviewWindowDto {
-            start_line: win_start,
-            end_line: win_end,
-            body_lines: win_end.saturating_sub(win_start) + 1,
-            has_more: false,
-        },
-    ))
-}
-
-/// Searches and adds indexed signatures and bounded navigation previews in page order.
-pub fn search_results_with_navigation(
-    conn: &Connection,
-    root: &Path,
-    pattern: &str,
-    options: &SearchOptions<'_>,
-    include_preview: bool,
-    include_pulse: bool,
-) -> Result<Value> {
-    const SIGNATURE_CHAR_LIMIT: usize = 512;
-    const PREVIEW_HIT_LIMIT: usize = 3;
-    const PREVIEW_BYTES_PER_HIT: usize = 4096;
-
-    let mut result = search_with_options(conn, pattern, options)?;
-    let pattern = pattern.trim();
-    let has_small_total = result["nodes"]["total"]
-        .as_u64()
-        .is_some_and(|total| total <= PREVIEW_HIT_LIMIT as u64);
-    let Some(items) = result["nodes"]["items"].as_array_mut() else {
-        return Ok(result);
-    };
-    if items.is_empty() {
-        return Ok(result);
-    }
-
-    let mut sources = SearchSourceCache::new(conn, root);
-
-    let ids = items
-        .iter()
-        .filter_map(|item| item["id"].as_str())
-        .collect::<Vec<_>>();
-    let serialized_ids = serde_json::to_string(&ids)?;
-    let metadata_rows = rows(
-        conn,
-        &format!(
-            "SELECT n.id,json_extract(n.details,'$.{}') AS signature,CASE WHEN n.is_test THEN 1 ELSE 0 END AS is_test,json_extract(n.details,'$.{}') AS docstring FROM nodes n JOIN json_each(?1) requested ON requested.value=n.id",
-            NodeDetailKey::SIGNATURE,
-            NodeDetailKey::DOC,
-        ),
-        &[&serialized_ids],
-        ids.len(),
-    )?;
-    let metadata = metadata_rows
-        .into_iter()
-        .filter_map(|row| {
-            Some((
-                row["id"].as_str()?.to_owned(),
-                (
-                    row["signature"].as_str().map(str::to_owned),
-                    row["is_test"].as_i64().map(|value| value != 0),
-                    row["docstring"].as_str().map(str::to_owned),
-                ),
-            ))
-        })
-        .collect::<HashMap<_, _>>();
-
-    let previews_enabled = include_preview || has_small_total;
-    let markdown = LanguageId::Markdown.as_str();
-    for (index, item) in items.iter_mut().enumerate() {
-        if !item.is_object() {
-            continue;
-        }
-        let mut dto: SearchNavigationItemDto =
-            serde_json::from_value(item.clone()).context("search result has no symbol id")?;
-        let (signature, is_test, docstring) =
-            metadata.get(&dto.id).cloned().unwrap_or((None, None, None));
-        dto.signature = signature.map(|value| {
-            let mut bounded = value.chars().take(SIGNATURE_CHAR_LIMIT).collect::<String>();
-            if value.chars().count() > SIGNATURE_CHAR_LIMIT {
-                bounded.push('…');
-            }
-            bounded
-        });
-        dto.inspect_selector = Some(InspectSelectorDto {
-            selector: dto.id.clone(),
-            show_source: true,
-        });
-
-        if let Some(is_test) = is_test {
-            dto.is_test = Some(json!(is_test));
-            let classification = if dto.language.as_deref() == Some(markdown) {
-                SymbolClassification::Documentation
-            } else if is_test {
-                SymbolClassification::Test
-            } else {
-                SymbolClassification::Production
-            };
-            dto.classification = Some(classification.as_str().to_owned());
-        }
-        if let Some(docstring) = docstring.as_deref().and_then(first_docstring_sentence) {
-            dto.docstring_first_sentence = Some(docstring);
-        }
-
-        let is_indexed_text = dto.match_reason.as_deref() == Some("indexed_text");
-        let is_markdown = dto.language.as_deref() == Some(markdown);
-        let matched_window = if is_indexed_text && !is_markdown && !pattern.trim().is_empty() {
-            apply_indexed_text_match_preview(
-                &mut sources,
-                &mut dto,
-                pattern,
-                previews_enabled,
-                PREVIEW_BYTES_PER_HIT,
-            )
-        } else {
-            None
-        };
-        if index == 0 && !options.exact && include_pulse {
-            dto.graph_pulse = Some(search_graph_pulse(conn, &dto.id));
-        }
-        if previews_enabled && index < PREVIEW_HIT_LIMIT {
-            if let Some((preview_src, preview_meta)) = matched_window {
-                dto.source = Some(preview_src);
-                dto.source_preview = Some(serde_json::to_value(preview_meta)?);
-            } else if dto.kind.as_ref().and_then(Value::as_str) != Some("file") {
-                let path = dto.path.clone().context("search result has no path")?;
-                if let Some(text) = sources.read(&path) {
-                    let node = json!({
-                        "id": dto.id,
-                        "kind": dto.kind,
-                        "name": dto.name,
-                        "qualname": dto.qualname,
-                        "path": path,
-                        "line": dto.line,
-                        "end_line": dto.end_line,
-                        "language": dto.language
-                    });
-                    let options = SourceOptions {
-                        enabled: true,
-                        leading_lines: 5,
-                        max_body_lines: 15,
-                        offset: 0,
-                    };
-                    if let Ok((source, preview)) =
-                        source_preview(conn, &node, text, &options, PREVIEW_BYTES_PER_HIT)
-                    {
-                        dto.source = Some(source);
-                        dto.source_preview = Some(preview);
-                    }
-                }
-            }
-        }
-        *item = serde_json::to_value(dto)?;
-    }
-    Ok(result)
-}
-
-fn search_graph_pulse(conn: &Connection, id: &str) -> Value {
-    let callers = match direct_call_summary(conn, id, true, 3) {
-        Ok(summary) => summary,
-        Err(_) => {
-            json!({"availability":"unavailable","cause":"caller relationships exceeded the indexed query budget"})
-        }
-    };
-    let implementations = (|| -> Result<usize> {
-        let budget = QueryBudget::new(conn);
-        let count = conn.query_row(
-            &format!(
-                "SELECT count(*) FROM edges WHERE kind='{}' AND (src_hash=?1 OR dst_hash=?1)",
-                EdgeKind::Implements.as_str(),
-            ),
-            [stable_hash64(id)],
-            |row| row.get::<_, usize>(0),
-        )?;
-        budget.check()?;
-        Ok(count)
-    })()
-    .map(|count| json!({"availability":"available","count":count}))
-    .unwrap_or_else(|_| json!({"availability":"unavailable","cause":"implementation relationships are unavailable within the indexed query budget"}));
-
-    let covering_tests = QueryOptions::resolve(
-        &ResponsePolicy::default(),
-        Some(3),
-        0,
-        Some(Detail::Compact),
-        None,
-    )
-    .and_then(|page| tests_paged_with_path(conn, id, None, "inbound", &page))
-    .map(|result| {
-        let method = result["discovery_method"]
-            .as_str()
-            .unwrap_or("unavailable")
-            .to_owned();
-        let total = result["nodes"]["total"].clone();
-        json!({
-            "availability":"available",
-            "discovery_method":method,
-            "total":total,
-            "items":result["nodes"]["items"],
-            "unresolved_references":result["unresolved_references"]
-        })
-    })
-    .unwrap_or_else(|_| json!({"availability":"unavailable","cause":"test relationships are unavailable within the indexed query budget"}));
-
-    json!({
-        "availability":"available",
-        "callers":callers,
-        "implementations":implementations,
-        "covering_tests":covering_tests
-    })
+    Ok((pattern.to_owned(), page))
 }

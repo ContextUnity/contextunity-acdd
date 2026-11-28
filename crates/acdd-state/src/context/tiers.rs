@@ -692,8 +692,42 @@ pub(super) fn apply_tier6_context_lenses(
     Ok(())
 }
 
+fn collect_slice_citations(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            for key in ["cited_symbols", "canonical_owners", "exported_interfaces"] {
+                if let Some(items) = map.get(key).and_then(Value::as_array) {
+                    for item in items.iter().filter_map(Value::as_str) {
+                        let trimmed = item.trim();
+                        if !trimmed.is_empty() {
+                            out.push(trimmed.to_owned());
+                        }
+                    }
+                }
+            }
+            for (key, child) in map {
+                if !matches!(
+                    key.as_str(),
+                    "cited_symbols" | "canonical_owners" | "exported_interfaces"
+                ) {
+                    collect_slice_citations(child, out);
+                }
+            }
+        }
+        Value::Array(arr) => {
+            for child in arr {
+                collect_slice_citations(child, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn build_citation_text(req: &ClaimContextRequest, target: Option<&str>) -> Option<String> {
     let mut parts = Vec::new();
+    if let Some(slice) = req.pre_task_slice.as_ref() {
+        collect_slice_citations(slice, &mut parts);
+    }
     if let Some(t) = target.map(str::trim).filter(|s| !s.is_empty()) {
         parts.push(t.to_owned());
     }

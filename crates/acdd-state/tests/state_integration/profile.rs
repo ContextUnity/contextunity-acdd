@@ -271,7 +271,7 @@ fn embedded_profiles_resolve_and_validate_matrix() {
     assert_eq!(code_build.checks[1].check, "code.lint");
     assert_eq!(
         code_build.checks[1].with,
-        json!({ "categories": ["arch", "syntax", "docs"] })
+        json!({ "categories": ["arch", "syntax", "docs", "duplicates"] })
     );
     let code_run_tests = code_p.gates.iter().find(|g| g.id == "run_tests").unwrap();
     assert_eq!(code_run_tests.checks.len(), 1);

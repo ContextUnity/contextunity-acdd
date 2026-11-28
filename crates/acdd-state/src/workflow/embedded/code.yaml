@@ -281,6 +281,7 @@ gates:
           - paths.instructions
           - paths.adrs
           - docs.invariants
+          - code.symbols
         pass: review
       - id: review
         role: independent_reviewer
@@ -302,6 +303,7 @@ gates:
           - paths.instructions
           - paths.adrs
           - docs.invariants
+          - code.symbols
         save:
           immutable: true
         fail: synthesize
@@ -321,6 +323,7 @@ gates:
                   - arch
                   - syntax
                   - docs
+                  - duplicates
           guidance:
             - task.code
             - core.execution

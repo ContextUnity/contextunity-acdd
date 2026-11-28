@@ -207,21 +207,18 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
     .unwrap();
     apply_claim_in_memory(&mut snap, &c3);
 
-    assert_eq!(
-        plan_extend_scope(
-            &snap,
-            &profile,
-            &ExtendScopeInput {
-                node_cursor: NodeCursor::task(t("T1"), vec![g("build")]),
-                paths: vec!["docs/guide/page.md".to_owned()],
-                reason: "collides with claimed T3".to_owned(),
-                worker_id: Some(w("w1")),
-            },
-        )
-        .unwrap_err()
-        .code,
-        ErrorCode::TaskScopeConflict
-    );
+    // Under IsolationMode::Worktree (`ScopeMode::Lazy`), overlapping scopes across isolated worktrees are admitted.
+    assert!(plan_extend_scope(
+        &snap,
+        &profile,
+        &ExtendScopeInput {
+            node_cursor: NodeCursor::task(t("T1"), vec![g("build")]),
+            paths: vec!["docs/guide/page.md".to_owned()],
+            reason: "collides with claimed T3".to_owned(),
+            worker_id: Some(w("w1")),
+        },
+    )
+    .is_ok());
 
     // 2b. `#459`: `extend_scope` supports non-terminal `root:polish`, rejects other `RootGate`s and `protected_paths`, and rejects terminal `root:polish`.
     let mut polish_snap = snap.clone();

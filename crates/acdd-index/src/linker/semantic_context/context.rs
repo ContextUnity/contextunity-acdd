@@ -160,6 +160,28 @@ pub(crate) struct Context<'a> {
         HashMap<&'static str, &'a (dyn languages::profile::LanguageMemberIndex + 'a)>,
     pub(super) import_states:
         HashMap<&'static str, &'a (dyn languages::profile::LanguageImportState + 'a)>,
+    pub(in crate::linker) shadowed_root_bindings: HashSet<(PathId, SymbolId)>,
+}
+
+impl<'a> Context<'a> {
+    pub(in crate::linker) fn mark_root_shadowed(&mut self, path: &str, name: &str) {
+        if let (Some(path_id), Some(sym_id)) = (
+            self.interner.lookup_path(path),
+            self.interner.lookup_symbol(name),
+        ) {
+            self.shadowed_root_bindings.insert((path_id, sym_id));
+        }
+    }
+
+    pub(in crate::linker) fn is_root_shadowed(&self, path: &str, name: &str) -> bool {
+        let Some(path_id) = self.interner.lookup_path(path) else {
+            return false;
+        };
+        let Some(sym_id) = self.interner.lookup_symbol(name) else {
+            return false;
+        };
+        self.shadowed_root_bindings.contains(&(path_id, sym_id))
+    }
 }
 
 pub(crate) struct LanguageMemberLookup<'ctx, 'a> {

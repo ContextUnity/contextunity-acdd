@@ -271,6 +271,7 @@ pub fn admit_claim(
         check_task_scope_overlap(
             snapshot,
             &parent_task.node_id,
+            Some(input.worktree.as_str()),
             &my_scope,
             &format!("task '{task_ref}' scope overlaps"),
         )?;

@@ -30,7 +30,10 @@ pub struct ScheduleReport {
 
 /// Return `true` if a task has already been claimed (`claim_revision >= 1` on task or any child gate)
 /// and has not yet reached a terminal or cascade-stale state (`Completed`, `Cancelled`, or `Stale`).
-fn is_task_claimed_unfinished(snapshot: &RunGraphSnapshot, task_node: &GateNodeRecord) -> bool {
+pub(crate) fn is_task_claimed_unfinished(
+    snapshot: &RunGraphSnapshot,
+    task_node: &GateNodeRecord,
+) -> bool {
     if matches!(
         task_node.status,
         NodeStatus::Completed | NodeStatus::Cancelled | NodeStatus::Stale
@@ -47,17 +50,32 @@ fn is_task_claimed_unfinished(snapshot: &RunGraphSnapshot, task_node: &GateNodeR
 }
 
 /// Reject `candidate_scope` if it overlaps any other already-claimed unfinished task.
+///
+/// Only bypasses `TASK_SCOPE_CONFLICT` against another claimed unfinished task when both tasks
+/// are `Worktree`-isolated and resolve to concrete, distinct canonical worktree paths.
 pub(crate) fn check_task_scope_overlap(
     snapshot: &RunGraphSnapshot,
     excluding_task_id: &str,
+    candidate_worktree: Option<&str>,
     candidate_scope: &[String],
     conflict_prefix: &str,
 ) -> Result<(), AcddError> {
+    let my_task = crate::machine::graph::find_node(snapshot, excluding_task_id).ok();
     for other in &snapshot.nodes {
         if other.kind != NodeKind::Task || other.node_id == excluding_task_id {
             continue;
         }
         if is_task_claimed_unfinished(snapshot, other) {
+            if my_task.is_some_and(|mine| {
+                crate::machine::scope::tasks_have_distinct_worktrees(
+                    snapshot,
+                    mine,
+                    candidate_worktree,
+                    other,
+                )
+            }) {
+                continue;
+            }
             let other_scope = container_scope(snapshot, other);
             if scopes_overlap(candidate_scope, &other_scope) {
                 return Err(AcddError::new(
@@ -281,7 +299,19 @@ pub(crate) fn is_task_schedule_eligible(
     }
     let my_scope = container_scope(snapshot, task_node);
     !claimed_unfinished.iter().any(|(other_ref, other_scope)| {
-        other_ref != task_ref && scopes_overlap(&my_scope, other_scope)
+        if other_ref == task_ref {
+            return false;
+        }
+        let distinct_worktree = snapshot
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Task && n.task_ref.as_ref() == Some(other_ref))
+            .is_some_and(|other_node| {
+                crate::machine::scope::tasks_have_distinct_worktrees(
+                    snapshot, task_node, None, other_node,
+                )
+            });
+        !distinct_worktree && scopes_overlap(&my_scope, other_scope)
     })
 }
 

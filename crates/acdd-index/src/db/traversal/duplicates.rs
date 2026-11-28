@@ -1,6 +1,9 @@
 use super::types::{normalize_scope, page_bounds};
 use crate::db::{
-    lint::{collect_file_duplicates, collect_symbol_duplicates, format_duplicate_suggestion},
+    lint::{
+        collect_file_duplicates, collect_symbol_duplicates, format_duplicate_suggestion,
+        DuplicateScanRequest,
+    },
     paging,
 };
 use acdd_core::response::QueryOptions;
@@ -73,17 +76,19 @@ pub fn duplicates_paged(
         return file_duplicates_paged(conn, scope, options, &generation);
     }
 
-    let report = collect_symbol_duplicates(conn, scope, min_lines)?;
+    let report = collect_symbol_duplicates(
+        conn,
+        &DuplicateScanRequest {
+            scope,
+            probe_paths: None,
+            min_lines,
+        },
+    )?;
     let (total, slice) = page_bounds(&report.groups, options);
     let paged_items: Vec<Value> = slice
         .iter()
         .map(|g| {
             let rep = &report.candidates[g.rep_idx];
-            let loc_paths: Vec<&str> = g
-                .locations
-                .iter()
-                .map(|l| report.candidates[l.candidate_idx].path.as_str())
-                .collect();
             let locations: Vec<Value> = g
                 .locations
                 .iter()
@@ -95,7 +100,7 @@ pub fn duplicates_paged(
                     })
                 })
                 .collect();
-            let suggestion = format_duplicate_suggestion(&rep.name, &loc_paths);
+            let suggestion = format_duplicate_suggestion(&rep.name, &report.candidates, &g.locations);
             json!({
                 "name": rep.name,
                 "kind": rep.kind,
@@ -125,6 +130,27 @@ pub fn duplicates_paged(
         "next_offset": page["next_offset"],
         "generation": page["generation"],
     });
+
+    if !report.reuse_hints.is_empty() {
+        let hints: Vec<Value> = report
+            .reuse_hints
+            .iter()
+            .map(|h| {
+                json!({
+                    "probe_name": h.probe_name,
+                    "probe_path": h.probe_path,
+                    "probe_line": h.probe_line,
+                    "owner_name": h.owner_name,
+                    "owner_path": h.owner_path,
+                    "owner_line": h.owner_line,
+                    "owner_signature": h.owner_signature,
+                    "inbound_callers": h.inbound_callers,
+                    "similarity": (h.similarity * 100.0).round() / 100.0,
+                })
+            })
+            .collect();
+        response["reuse_hints"] = json!(hints);
+    }
 
     if !report.stale_files.is_empty() {
         response["stale_files"] = json!(report.stale_files);

@@ -41,6 +41,67 @@ fn unchanged_input_cold_builds_have_the_same_root_after_reindex_and_vacuum() {
     );
     commitments::verify(&Connection::open(&second_db).unwrap())
         .expect("the second cold build verifies");
+
+    #[cfg(feature = "lang-rust")]
+    {
+        let skel_source = workspace.path("skel-source");
+        let cache_dir = workspace.path("extraction-cache");
+        workspace.write(
+            "skel-source/src/lib.rs",
+            "pub fn alpha(x: i32) -> i32 {\n    let a = x + 1;\n    let b = a * 2;\n    let c = b - 3;\n    c\n}\n",
+        );
+        workspace.write(
+            "skel-source/src/extra.rs",
+            "pub fn beta(y: i32) -> i32 {\n    let a = y + 10;\n    let b = a * 20;\n    let c = b - 30;\n    c\n}\n",
+        );
+        let read_skeletons = |db: &std::path::Path, path: &str| -> Option<Vec<(String, Vec<u64>)>> {
+            let conn = Connection::open(db).unwrap();
+            let blob: Option<Vec<u8>> = rusqlite::OptionalExtension::optional(conn.query_row(
+                "SELECT skeleton_blob FROM statement_skeletons WHERE path=?1",
+                [path],
+                |row| row.get(0),
+            ))
+            .unwrap();
+            blob.map(|b| acdd_index::typed_facts::decode_statement_skeletons(&b).unwrap())
+        };
+        let db1 = workspace.path("cold-skel.sqlite");
+        let cold_report = writer::build_with_cache_dir(&skel_source, &db1, None, &cache_dir).unwrap();
+        let cold_root = cold_report["output_root"].as_str().unwrap().to_owned();
+        let lib_skels = read_skeletons(&db1, "src/lib.rs").expect("cold build writes src/lib.rs skeletons");
+        assert!(!lib_skels.is_empty() && lib_skels[0].1.iter().any(|&h| h != 0));
+        assert!(read_skeletons(&db1, "src/extra.rs").is_some());
+        {
+            let conn = Connection::open(&db1).unwrap();
+            let domains: Vec<String> = conn
+                .prepare("SELECT DISTINCT domain FROM domain_commitments ORDER BY domain")
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            assert!(!domains.iter().any(|d| d == "statement_skeletons"));
+            conn.execute("DELETE FROM statement_skeletons WHERE path='src/lib.rs'", [])
+                .unwrap();
+            commitments::verify(&conn)
+                .expect("deleting non-committed statement_skeletons keeps seal valid");
+        }
+        let db2 = workspace.path("cached-skel.sqlite");
+        let cached_report = writer::build_with_cache_dir(&skel_source, &db2, None, &cache_dir).unwrap();
+        assert_eq!(cached_report["output_root"].as_str().unwrap(), cold_root);
+        assert!(cached_report["pipeline"]["extraction_cache_hits"].as_u64().unwrap() >= 2);
+        assert_eq!(read_skeletons(&db2, "src/lib.rs"), Some(lib_skels.clone()));
+        assert!(read_skeletons(&db2, "src/extra.rs").is_some());
+        workspace.write(
+            "skel-source/src/lib.rs",
+            "pub fn alpha(x: i32) -> i32 {\n    let a = x + 99;\n    let b = a * 2;\n    let c = b - 3;\n    let d = c + 4;\n    d\n}\n",
+        );
+        std::fs::remove_file(skel_source.join("src/extra.rs")).unwrap();
+        writer::build_with_cache_dir(&skel_source, &db2, None, &cache_dir).unwrap();
+        let updated_skels =
+            read_skeletons(&db2, "src/lib.rs").expect("delta updates src/lib.rs skeletons");
+        assert_ne!(updated_skels, lib_skels);
+        assert!(read_skeletons(&db2, "src/extra.rs").is_none());
+    }
 }
 
 #[cfg(feature = "lang-rust")]

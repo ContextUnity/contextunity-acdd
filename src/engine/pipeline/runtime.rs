@@ -80,6 +80,7 @@ pub(super) struct PipelineItem {
     pub(super) file: FileEntry,
     pub(super) catalog: SymbolCatalog,
     pub(super) encoded_facts: Vec<u8>,
+    pub(super) skeleton_blob: Option<Vec<u8>>,
     pub(super) local_facts_leaf: (String, String),
     pub(super) storage_rows: acdd_index::db::writer::cache::PreparedCatalogStorage,
     pub(super) permit: MemoryPermit,

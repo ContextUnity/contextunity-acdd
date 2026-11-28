@@ -79,7 +79,7 @@ Investigate codebases and documentation using ACDD's structural graph and docs t
    - **Literal text search (`mode="search"`)**: Use for literal config values, YAML/TOML keys, or string constants scoped with `path:` (`regex=true|false`); use `rg -n` for gitignored or unadmitted paths.
    - **Tool help (`acdd_guide`)**: Call `acdd_guide` / `acdd guide` for built-in schema, tool, and workflow help.
 - **Graph hygiene & unified lint (`duplicates`, `dead_tails`, `code_map_lint`)**: Before submitting `build`,
-  `polish`, or any code review, run `code_map_query(operation="duplicates", level="symbol", min_lines=5, path=...)`,
+  `polish`, or any code review, run `code_map_query(operation="duplicates", level="symbol", min_lines=5, path=...)` (asymmetric Probe-vs-Workspace scan promoting newly introduced `>= 0.80` diff clones to `Error` and surfacing graph-ranked `0.45..0.80` `reuse_hints` plus Diff X-Ray untouched siblings on passing `verify`),
   `code_map_query(operation="dead_tails", path=...)` (workspace-wide without
   `path`/`target` on integration reviews), and `code_map_lint` (`acdd lint`; defaults to
   `[arch, syntax, docs]`, or `categories: ["arch","duplicates","dead_tails","cycles","syntax","docs"]` / `--categories all`). `syntax` checks stored parser diagnostics (`syntax.parse`), `fact_budget_exceeded`, and `intra_crate_type_homonym` (using `complexity.severity`, while AST `cognitive_complexity` and `max_nesting_depth` are recorded in `node.details` telemetry); `cycles` isolates multi-node non-test/non-archive module `imports` SCCs (enforceable at `error` via `forbid_cycles`); `dead_tails` computes workspace-wide

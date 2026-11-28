@@ -403,6 +403,7 @@ mod tests {
             DomainCheckOutcome::Passed {
                 summary,
                 execution_digest_salt,
+                ..
             } => {
                 assert_eq!(
                     summary,

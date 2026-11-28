@@ -669,6 +669,7 @@ impl<'a> Context<'a> {
             member_bases: HashMap::new(),
             member_states: HashMap::new(),
             import_states,
+            shadowed_root_bindings: HashSet::new(),
         };
         context.build_rule_caches_for_paths(all, dependencies);
         let pending_cross_module = context.populate_file_imports(

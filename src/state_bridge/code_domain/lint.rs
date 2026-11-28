@@ -304,6 +304,7 @@ impl CodeDomainProvider {
             if scan.entries.is_empty() {
                 return Ok(DomainCheckOutcome::Passed {
                     summary: "code.lint: no indexable files in worktree".to_owned(),
+                    diagnostics: Vec::new(),
                     execution_digest_salt: Some(format!(
                         "index_generation=no-index;live_files_digest={live_digest}"
                     )),
@@ -347,7 +348,11 @@ impl CodeDomainProvider {
             workspace_root: Some(&req.worktree),
             page: &page,
         };
-        let report = db_lint::run_lint(&conn, &lint_req)?;
+        let diff_ctx = (!req.changed_paths.is_empty()).then_some(db_lint::LintDiffContext {
+            diff_paths: req.changed_paths.as_slice(),
+            baseline_ref: req.baseline_ref.as_deref(),
+        });
+        let report = db_lint::run_lint_with_diff(&conn, &lint_req, diff_ctx.as_ref())?;
         let errors = report
             .pointer("/summary/errors")
             .and_then(Value::as_u64)
@@ -362,10 +367,32 @@ impl CodeDomainProvider {
             .unwrap_or(0);
 
         if errors == 0 {
+            let mut xray_diagnostics: Vec<String> = Vec::new();
+            if !req.changed_paths.is_empty() {
+                if let Ok(siblings) = acdd_index::db::analyze::collect_untouched_cochange_siblings(
+                    &conn,
+                    &req.worktree,
+                    &req.changed_paths,
+                    Some(&req.path_policy),
+                    3,
+                ) {
+                    for (changed, sibling, count) in siblings {
+                        xray_diagnostics.push(format!(
+                            "[xray.cochange] untouched sibling '{sibling}' relates to '{changed}' ({count} shared commits/callees)"
+                        ));
+                    }
+                }
+                if let Some(hints) = report.get("diff_reuse_hints").and_then(Value::as_array) {
+                    for hint in hints.iter().filter_map(Value::as_str).take(3) {
+                        xray_diagnostics.push(hint.to_owned());
+                    }
+                }
+            }
             return Ok(DomainCheckOutcome::Passed {
                 summary: format!(
                     "code.lint passed ({warnings} warning(s), {rules_evaluated} rule(s) evaluated)"
                 ),
+                diagnostics: xray_diagnostics,
                 execution_digest_salt: Some(format!(
                     "index_generation={index_gen};live_files_digest={live_digest}"
                 )),

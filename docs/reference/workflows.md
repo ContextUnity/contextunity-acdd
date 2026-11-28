@@ -241,7 +241,7 @@ Every gate declares its exact context lenses in `context:` (either as a string s
 | `paths.<name>` | `WorkflowDef.paths.<name>` (`DocsDomainProvider`) | Non-spec workspace files/directories declared in the workflow `paths:` map (e.g. `paths.instructions`, `paths.adrs`), ranked via the 5-tier diff-aware policy below. |
 | `docs.invariants` | `DocsDomainProvider` | Non-archive `INV-*` invariants governing symbols or paths in `admitted_scope`, marking lint-backed rules with `[ENFORCED]`. |
 | `docs.workspace_config` | `DocsDomainProvider` | Summary of active workspace config: `specs`, `docs_roots`, `workflows_dirs`, `available_workflows`, `architecture_zones`, `limits.max_metadata_bytes`, and `modules`. |
-| `code.symbols` | `CodeDomainProvider` | Indexed production symbols inside `admitted_scope` (filtering derived/generated methods). |
+| `code.symbols` | `CodeDomainProvider` | Indexed production symbols inside `admitted_scope` plus repo-wide RRF/FTS5 orientation hits (`discovery: repo_rrf`, prioritizing blueprint `cited_symbols`/`canonical_owners`/`exported_interfaces` and `target`, with cold-worktree root-index fallback and bounded indexed signatures). |
 | `code.tests` | `CodeDomainProvider` | Deduplicated covering test paths for `admitted_scope` symbols (capped at top 8). |
 | `code.external_callers` | `CodeDomainProvider` | Inbound callers and SQL table consumers outside `admitted_scope` (capped at top 5 plus overflow count). |
 

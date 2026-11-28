@@ -457,8 +457,15 @@ fn evaluate_pass(
     // 1. Scope barrier check.
     let admitted_scope = container_scope(snapshot, node);
     let is_unscoped_root = node.kind == NodeKind::RootGate && admitted_scope.is_empty();
-    let violations =
-        detect_scope_violations(snapshot, profile, obs, &admitted_scope, is_unscoped_root);
+    let scope_mode = crate::machine::scope::effective_scope_mode(snapshot, node);
+    let violations = detect_scope_violations(
+        snapshot,
+        profile,
+        obs,
+        &admitted_scope,
+        is_unscoped_root,
+        scope_mode,
+    );
     if !violations.is_empty() {
         return Err(AcddError::new(
             ErrorCode::OutOfScopeChanges,

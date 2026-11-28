@@ -30,7 +30,7 @@ use dictionary::*;
 use ingest::*;
 
 mod payload_store;
-pub use ingest::LocalFactsBatchWriter;
+pub use ingest::{LocalFactsBatchWriter, StatementSkeletonsBatchWriter};
 pub use payload_store::PayloadStore;
 use payload_store::StagedPreparedStorage;
 

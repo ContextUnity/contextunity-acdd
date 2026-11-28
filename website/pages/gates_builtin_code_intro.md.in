@@ -22,14 +22,14 @@ When a worker calls `acdd_claim` / `acdd claim <node_cursor>`, ACDD builds a **6
 ## What the agent receives at each gate
 
 1. **`blueprint_synthesis.synthesize`** (`architect`):
-   - Receives `milestone.synthesis` guidance, `paths.instructions`, `paths.adrs`, `docs.invariants`, and `blackboard` decisions.
+   - Receives `milestone.synthesis` guidance, `paths.instructions`, `paths.adrs`, `docs.invariants`, `code.symbols` (repo-wide RRF orientation), and `blackboard` decisions.
    - Outputs `proof: blueprint` with per-task slices.
 2. **`blueprint_synthesis.review`** (`independent_reviewer`, `independent_from: [synthesize]`):
    - Audits the blueprint across `claims`, `architecture`, `project_isolation`, and `administration`.
    - Locks `save.immutable: true`.
 3. **`tasks.<id>.build`** (`builder`):
-   - Receives `pre_task_slice`, `unresolved_findings` + `failed_trace_log_tail` (on rework), `dependency_receipts`, `docs.*` lenses, `code.symbols`, `code.tests`, and `code.external_callers`.
-   - Must pass `build_check`, `code.seam`, and `code.lint`.
+   - Receives `pre_task_slice`, `unresolved_findings` + `failed_trace_log_tail` (on rework), `dependency_receipts`, `docs.*` lenses, `code.symbols` (scoped + repo-wide `repo_rrf`), `code.tests`, and `code.external_callers`.
+   - Must pass `build_check`, `code.seam`, and `code.lint` (including asymmetric diff-aware `duplicates` with baseline provenance; passing runs surface non-blocking Diff X-Ray `xray.cochange` and `xray.reuse_hint` diagnostics).
 4. **`tasks.<id>.review`** (`independent_reviewer`, `independent_from: [build]`):
    - Audits all 6 contours (`paths`, `claims`, `architecture`, `concurrency`, `project_isolation`, `administration`) with full `docs.*` and `code.*` lenses.
    - Routes localized defects to `build` (`fail`) or systemic drift to `rearchitect` (`fail_drift`).

@@ -267,10 +267,14 @@ pub struct DomainCheckReq {
 /// Fail-closed check verdict (`Passed | Failed`, never `NotApplicable`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum DomainCheckOutcome {
-    /// The check passed; optional salt is folded into `execution_digest`.
+    /// The check passed; optional salt is folded into `execution_digest`, and optional
+    /// non-blocking diagnostics (e.g. Diff X-Ray hints) are forwarded to `VerifyResp`.
     Passed {
         /// Human-readable verification summary.
         summary: String,
+        /// Optional non-blocking diagnostics surfaced on passing verification.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        diagnostics: Vec<String>,
         /// Optional live-index generation or file-digest salt bound into `execution_digest`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         execution_digest_salt: Option<String>,
@@ -1077,6 +1081,7 @@ mod tests {
             };
             Ok(DomainCheckOutcome::Passed {
                 summary: format!("{}.{check} ok", self.domain),
+                diagnostics: Vec::new(),
                 execution_digest_salt: salt,
             })
         }

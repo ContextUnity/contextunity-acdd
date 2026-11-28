@@ -31,7 +31,7 @@ use acdd_spec::Receipt;
 use crate::usecases::lifecycle::{
     acquire_repo_lock, append_trace_event, collect_integration_inputs, ensure_state_enabled,
     load_active_run_graph, parse_cursor_for_snapshot, primary_workspace_root,
-    resolve_node_worktree, resolve_repo_layout_optional, with_repo_lock_and_maintenance,
+    resolve_bound_node_worktree, resolve_repo_layout_optional, with_repo_lock_and_maintenance,
 };
 use crate::usecases::queries::find_profile_gate_def;
 use crate::usecases::verify::find_machine_gate;
@@ -140,12 +140,14 @@ fn prepare_submit_observations<'m>(
         now_utc: acdd_core::telemetry::now_utc_iso_ms(),
         ..ValidatedObservations::default()
     };
+    let scope_mode = crate::machine::scope::effective_scope_mode(snapshot, node);
     let scope_violations = detect_scope_violations(
         snapshot,
         machine_profile,
         &scope_obs,
         admitted_scope,
         is_unscoped_root,
+        scope_mode,
     );
     if !scope_violations.is_empty() {
         return Err(AcddError::new(
@@ -288,7 +290,7 @@ pub(crate) fn submit_holding_repo_lock(
 
     let primary = primary_workspace_root(config);
     let target_worktree =
-        resolve_node_worktree(config, &snapshot.run, node, req.worktree.as_deref());
+        resolve_bound_node_worktree(config, &snapshot, node, req.worktree.as_deref())?;
     let policy = crate::usecases::lifecycle::build_path_policy(
         config,
         backend,
@@ -304,6 +306,7 @@ pub(crate) fn submit_holding_repo_lock(
         &snapshot,
         node,
         machine_gate,
+        &target_worktree,
         &req,
         &policy,
     )?;
@@ -480,6 +483,9 @@ fn handle_reject(
     req: SubmitReq,
 ) -> Result<SubmitResp, AcddError> {
     let node_id = cursor.to_node_id()?;
+    if let Some(node) = snapshot.nodes.iter().find(|n| n.node_id == node_id) {
+        let _ = resolve_bound_node_worktree(config, snapshot, node, req.worktree.as_deref())?;
+    }
     let obs = ValidatedObservations {
         now_utc: acdd_core::telemetry::now_utc_iso_ms(),
         ..ValidatedObservations::default()

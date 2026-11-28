@@ -186,12 +186,15 @@ pub fn detect_scope_violations(
     obs: &ValidatedObservations,
     admitted_scope: &[String],
     is_unscoped_root_gate: bool,
+    scope_mode: crate::machine::scope::ScopeMode,
 ) -> Vec<String> {
     let mut violations: BTreeSet<String> = obs.out_of_scope_paths.iter().cloned().collect();
     let policy = effective_path_policy(snapshot, obs);
+    let protected_only =
+        is_unscoped_root_gate || scope_mode == crate::machine::scope::ScopeMode::Lazy;
 
     for path in &obs.changed_paths {
-        let allowed = if is_unscoped_root_gate {
+        let allowed = if protected_only {
             policy.is_candidate_included(path)
                 && !policy.is_protected_path(path, &profile.protected_paths)
         } else {
@@ -229,8 +232,15 @@ fn classify_verify_outcome(
 
     let is_unscoped_root =
         node.kind == crate::types::NodeKind::RootGate && admitted_scope.is_empty();
-    let scope_violations =
-        detect_scope_violations(snapshot, profile, obs, admitted_scope, is_unscoped_root);
+    let scope_mode = crate::machine::scope::effective_scope_mode(snapshot, node);
+    let scope_violations = detect_scope_violations(
+        snapshot,
+        profile,
+        obs,
+        admitted_scope,
+        is_unscoped_root,
+        scope_mode,
+    );
     if !scope_violations.is_empty() {
         return (
             TraceStatus::ScopeViolation,
@@ -797,6 +807,7 @@ mod tests {
                 &custom_obs,
                 &scope,
                 unscoped_root,
+                crate::machine::scope::ScopeMode::Strict,
             );
             assert_eq!(
                 !v.is_empty(),
@@ -804,6 +815,21 @@ mod tests {
                 "detect_scope_violations({changed:?}, unscoped={unscoped_root})"
             );
         }
+        // ScopeMode::Lazy admits non-protected out-of-scope paths while keeping protected_paths blocked.
+        let lazy_obs = ValidatedObservations {
+            changed_paths: vec!["src/outside.rs".to_owned(), "Cargo.toml".to_owned()],
+            path_policy: Some(custom_policy),
+            ..ValidatedObservations::default()
+        };
+        let lazy_violations = super::detect_scope_violations(
+            &snapshot,
+            &custom_profile,
+            &lazy_obs,
+            &["src/only_a.rs".to_owned()],
+            false,
+            crate::machine::scope::ScopeMode::Lazy,
+        );
+        assert_eq!(lazy_violations, vec!["Cargo.toml".to_owned()]);
         custom_profile.protected_paths.clear();
     }
 }

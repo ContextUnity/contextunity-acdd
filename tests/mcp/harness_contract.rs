@@ -559,6 +559,7 @@ fn mcp_relative_worktrees_custom_dbs_and_extra_providers_contract() {
             anyhow::ensure!(c == "ping");
             Ok(DomainCheckOutcome::Passed {
                 summary: r.worktree.display().to_string(),
+                diagnostics: Vec::new(),
                 execution_digest_salt: Some("v1".into()),
             })
         }
@@ -623,7 +624,7 @@ fn mcp_relative_worktrees_custom_dbs_and_extra_providers_contract() {
         .enable_all()
         .build()
         .unwrap();
-    let call_json = |id: i64, name: &str, args: Value| -> Value {
+    let call_raw = |id: i64, name: &str, args: Value| -> (bool, String) {
         rt.block_on(async {
             let (_c, tr) = tokio::io::duplex(4096);
             let running = serve_directly(
@@ -640,10 +641,14 @@ fn mcp_relative_worktrees_custom_dbs_and_extra_providers_contract() {
             let CallToolResponse::Complete(res) = server.call_tool(req, ctx).await.unwrap() else {
                 panic!("incomplete");
             };
-            let text = res.content[0].as_text().unwrap().text.as_str();
-            assert_ne!(res.is_error, Some(true), "{name}({args}) failed: {text}");
-            serde_json::from_str(text).unwrap()
+            let text = res.content[0].as_text().unwrap().text.clone();
+            (res.is_error == Some(true), text)
         })
+    };
+    let call_json = |id: i64, name: &str, args: Value| -> Value {
+        let (is_err, text) = call_raw(id, name, args.clone());
+        assert!(!is_err, "{name}({args}) failed: {text}");
+        serde_json::from_str(&text).unwrap()
     };
 
     let (canon_wt, canon_root) = (
@@ -711,6 +716,27 @@ fn mcp_relative_worktrees_custom_dbs_and_extra_providers_contract() {
             )["items"][0]["id"],
             post["entry"]["id"]
         );
+        if idx == 0 {
+            // Cross-checkout `--worktree` override must fail closed on both MCP `acdd_verify` and `acdd_submit`.
+            let (v_err, v_text) = call_raw(
+                base + 8,
+                "acdd_verify",
+                json!({"run":&run_id,"node":"execute","worker_id":"builder","claim_revision":claim["claim_revision"],"worktree":".","format":"json"}),
+            );
+            assert!(
+                v_err && v_text.contains("EXTERNAL_GIT_DRIFT"),
+                "expected MCP acdd_verify cross-checkout override rejection: {v_text}"
+            );
+            let (s_err, s_text) = call_raw(
+                base + 9,
+                "acdd_submit",
+                json!({"run":&run_id,"node":"execute","action":"pass","worker_id":"builder","claim_revision":claim["claim_revision"],"worktree":".","format":"json"}),
+            );
+            assert!(
+                s_err && s_text.contains("EXTERNAL_GIT_DRIFT"),
+                "expected MCP acdd_submit cross-checkout override rejection: {s_text}"
+            );
+        }
         assert_eq!(
             call_json(
                 base + 6,
@@ -829,6 +855,188 @@ fn mcp_relative_worktrees_custom_dbs_and_extra_providers_contract() {
     assert!(adrs["items"]
         .as_array()
         .is_some_and(|a| a.iter().any(|i| i["path"] == "docs/adr/0001-custom-db.md")));
+
+    // Real passing CLI/MCP `VerifyResp` Diff X-Ray parity (both `[xray.cochange]` and `[xray.reuse_hint]`, zero mocks).
+    let xray_ws = Workspace::with_files(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"xray_mcp\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        (
+            "src/lib.rs",
+            "pub mod base;\npub mod sibling;\npub mod probe;\n",
+        ),
+        (
+            "src/base.rs",
+            "pub fn shared_target(v: i32) -> i32 { v + 1 }\n\
+             pub fn shared_helper(v: i32) -> i32 { v * 2 }\n\
+             pub fn canonical_owner(x: i32) -> i32 {\n\
+                 let a = x + 10;\n\
+                 let b = a * 20;\n\
+                 let c = b - 30;\n\
+                 let d = c + 40;\n\
+                 let e = d * 50;\n\
+                 let f = e - 60;\n\
+                 shared_target(f) + shared_helper(f)\n\
+             }\n\
+             pub fn caller_one(x: i32) -> i32 { canonical_owner(x) + 1 }\n",
+        ),
+        (
+            "src/sibling.rs",
+            "use crate::base::shared_target;\npub fn untouched_sibling(x: i32) -> i32 { shared_target(x + 9) }\n",
+        ),
+        (
+            "src/probe.rs",
+            "use crate::base::shared_target;\npub fn placeholder(x: i32) -> i32 { shared_target(x) }\n",
+        ),
+        (
+            ".acdd/workflows/xray.yaml",
+            "version: 2\ninherit: none\ngit: { isolation: in_place, worktrees: manual }\n\
+             commands:\n  ok: { command: \"true\" }\n\
+             gates:\n  - id: execute\n    proof: command\n    command: ok\n    checks: [{ check: code.lint, with: { categories: [duplicates] } }]\n",
+        ),
+    ]);
+    let xray_git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(xray_ws.root())
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    xray_git(&["init", "-b", "main"]);
+    xray_git(&["config", "user.name", "Test"]);
+    xray_git(&["config", "user.email", "t@e.com"]);
+    xray_git(&["config", "commit.gpgsign", "false"]);
+    xray_git(&["add", "."]);
+    xray_git(&["commit", "-m", "init xray"]);
+    xray_ws.build();
+    let xray_server = Server::new(xray_ws.root().to_path_buf(), xray_ws.db());
+    let call_xray = |id: i64, name: &str, args: Value| -> String {
+        rt.block_on(async {
+            let (_c, tr) = tokio::io::duplex(4096);
+            let running = serve_directly(
+                Server::new(Default::default(), Default::default()),
+                tokio::io::split(tr),
+                None,
+            );
+            let ctx = RequestContext::<RoleServer>::new(
+                NumberOrString::Number(id),
+                running.peer().clone(),
+            );
+            let req = CallToolRequestParams::new(name.to_owned())
+                .with_arguments(args.as_object().cloned().unwrap_or_default());
+            let CallToolResponse::Complete(res) = xray_server.call_tool(req, ctx).await.unwrap() else {
+                panic!("incomplete");
+            };
+            let text = res.content[0].as_text().unwrap().text.clone();
+            assert_ne!(res.is_error, Some(true), "{name}({args}) failed: {text}");
+            text
+        })
+    };
+    let xray_start: Value = serde_json::from_str(&call_xray(
+        201,
+        "acdd_state",
+        json!({"action":"start","goal":"xray parity","workflow":".acdd/workflows/xray.yaml","scope":["src/probe.rs"],"in_place":true,"format":"json"}),
+    ))
+    .unwrap();
+    let xray_rid = xray_start["run"]["run_id"].as_str().unwrap().to_owned();
+    let xray_claim: Value = serde_json::from_str(&call_xray(
+        202,
+        "acdd_claim",
+        json!({"run":&xray_rid,"node":"execute","worker_id":"builder-xray","format":"json"}),
+    ))
+    .unwrap();
+    // Edit src/probe.rs to partially overlap canonical_owner (0.45..0.80 -> [xray.reuse_hint])
+    // while sharing `shared_target` with untouched `src/sibling.rs` (-> [xray.cochange]).
+    xray_ws.write(
+        "src/probe.rs",
+        "use crate::base::{shared_helper, shared_target};\n\
+         pub fn probe_fn(x: i32) -> i32 {\n\
+             let a = x + 10;\n\
+             let b = a * 20;\n\
+             let c = b - 30;\n\
+             let d = c + 40;\n\
+             let extra = shared_helper(d) + 777;\n\
+             let extra2 = extra * 3;\n\
+             shared_target(extra2)\n\
+         }\n",
+    );
+    let xray_verify_json_text = call_xray(
+        203,
+        "acdd_verify",
+        json!({"run":&xray_rid,"node":"execute","worker_id":"builder-xray","claim_revision":xray_claim["claim_revision"],"format":"json"}),
+    );
+    let xray_verify_json: Value = serde_json::from_str(&xray_verify_json_text).unwrap();
+    assert_eq!(xray_verify_json["passed"], json!(true));
+    let diags: Vec<&str> = xray_verify_json["check_results"][0]["diagnostics"]
+        .as_array()
+        .expect("diagnostics array")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert!(
+        diags.iter().any(|d| d.starts_with("[xray.cochange]") && d.contains("src/sibling.rs")),
+        "expected [xray.cochange] on passing MCP VerifyResp: {diags:?}"
+    );
+    assert!(
+        diags.iter().any(|d| d.starts_with("[xray.reuse_hint]") && d.contains("canonical_owner")),
+        "expected [xray.reuse_hint] on passing MCP VerifyResp: {diags:?}"
+    );
+    let xray_verify_md = call_xray(
+        204,
+        "acdd_verify",
+        json!({"run":&xray_rid,"node":"execute","worker_id":"builder-xray","claim_revision":xray_claim["claim_revision"],"format":"markdown"}),
+    );
+    let claim_rev_str = xray_claim["claim_revision"]
+        .as_u64()
+        .expect("claim_revision")
+        .to_string();
+    let cli_verify_args = [
+        "verify",
+        "execute",
+        "--run",
+        xray_rid.as_str(),
+        "--worker",
+        "builder-xray",
+        "--claim-revision",
+        claim_rev_str.as_str(),
+    ];
+    let cli_verify_json_out = crate::cli::run_cli_json(&xray_ws, &cli_verify_args);
+    assert!(
+        cli_verify_json_out.status.success(),
+        "CLI verify JSON failed: {}",
+        String::from_utf8_lossy(&cli_verify_json_out.stderr)
+    );
+    let cli_verify_envelope: Value =
+        serde_json::from_slice(&cli_verify_json_out.stdout).expect("CLI VerifyResp JSON");
+    let cli_verify_json = cli_verify_envelope
+        .get("Verify")
+        .unwrap_or(&cli_verify_envelope);
+    assert_eq!(cli_verify_json["passed"], json!(true));
+    assert_eq!(cli_verify_json["passed"], xray_verify_json["passed"]);
+    assert_eq!(
+        cli_verify_json["execution_digest"],
+        xray_verify_json["execution_digest"],
+        "CLI and MCP execution_digest must match"
+    );
+    assert_eq!(
+        cli_verify_json["check_results"][0]["diagnostics"],
+        xray_verify_json["check_results"][0]["diagnostics"],
+        "CLI and MCP VerifyResp Diff X-Ray diagnostics must match"
+    );
+    let cli_verify_md_out = crate::cli::run_cli(&xray_ws, &cli_verify_args);
+    assert!(
+        cli_verify_md_out.status.success(),
+        "CLI verify markdown failed: {}",
+        String::from_utf8_lossy(&cli_verify_md_out.stderr)
+    );
+    let cli_verify_md = String::from_utf8_lossy(&cli_verify_md_out.stdout);
+    assert_eq!(
+        xray_verify_md.trim_end(),
+        cli_verify_md.trim_end(),
+        "MCP and CLI markdown rendering of passing VerifyResp Diff X-Ray must be identical"
+    );
 }
 
 #[test]

@@ -95,9 +95,9 @@ required before `submit` whenever the gate declares `command:`, `call:`,
   - Under `git.worktrees: managed` (`acdd start --worktree`), claiming a task gate creates `.worktrees/<run_name>-<task_ref>` on branch `task/<run_name>-<task_ref>`; under `manual` or an explicit `worktree`, it binds to the selected checkout.
   - Taking over another worker's active claim requires `--force` (plus `--steal-remote` across different host fingerprints).
 - **Verify (`verify`)**:
-  1. Validates working-tree edits against `WorkspacePathPolicy::is_agent_writable`.
+  1. Validates working-tree edits against `WorkspacePathPolicy::is_agent_writable` and `protected_paths`. Under `IsolationMode::Worktree` task builds (`ScopeMode::Lazy`), `protected_paths` and candidate inclusion remain hard write barriers (failing closed with `OUT_OF_SCOPE_CHANGES` before any scope mutation), while non-protected out-of-scope edits auto-admit into `extended_scope` (`auto:lazy_scope`) without invalidating the active claim; `in_place` runs and narrow gates stay strictly scoped (`ScopeMode::Strict`).
   2. Runs configured `command:` (expanding `{test_filter}` when `--test` is passed) or `call: <domain>.<action>`, streaming output to `.acdd/run/<run_id>/traces.jsonl`.
-  3. Runs configured `checks: [<domain>.<check>]` (such as `code.seam` and `code.lint`), then observes post-check freshness (`observe_freshness`) after all checks pass so post-mutation `index_generation` and `execution_digest_salt` values bind into `execution_digest`.
+  3. Runs configured `checks: [<domain>.<check>]` (such as `code.seam` and `code.lint`, which forwards non-blocking Diff X-Ray diagnostics—untouched co-change/shared-callee siblings and ranked `reuse_hints`—via `DomainCheckOutcome::Passed.diagnostics` into `VerifyResp` on both CLI and MCP), then observes post-check freshness (`observe_freshness`) after all checks pass so post-mutation `index_generation` and `execution_digest_salt` values bind into `execution_digest`.
   4. Checks `ProofKind` (`command` requires exit status `0`).
   5. On a mechanical gate (`role` omitted) with a `fail:` route, interactive
      `acdd verify` and `acdd_verify` record the failed trace and return the error

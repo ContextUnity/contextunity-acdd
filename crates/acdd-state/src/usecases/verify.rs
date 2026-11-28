@@ -20,7 +20,7 @@ use crate::usecases::dto::{VerifyReq, VerifyResp};
 use crate::usecases::lifecycle::{
     acquire_repo_lock, append_trace_event, combine_check_observations, ensure_state_enabled,
     load_active_run_graph, parse_cursor_for_snapshot, primary_workspace_root,
-    resolve_node_worktree, resolve_repo_layout_optional,
+    resolve_bound_node_worktree, resolve_repo_layout_optional,
 };
 use crate::usecases::queries::find_profile_gate_def;
 use acdd_core::errors::{ErrorCode, AcddError};
@@ -36,6 +36,7 @@ struct CapturedVerifyClaim {
     contract_revision: u32,
     worker_id: Option<acdd_core::ids::WorkerId>,
     node_version: u64,
+    worktree: Option<String>,
 }
 
 fn verify_active_node_cas<'a>(
@@ -91,6 +92,7 @@ fn verify_active_node_cas<'a>(
             || node.contract_revision != cap.contract_revision
             || node.worker_id != cap.worker_id
             || node.node_version != cap.node_version
+            || node.worktree != cap.worktree
         {
             return Err(AcddError::new(
                 ErrorCode::StaleClaimRevision,
@@ -204,45 +206,25 @@ pub(crate) fn handle_verify_with_failure_return(
         };
 
     let _pre_lock = acquire_repo_lock(layout.as_ref())?;
-    let loaded =
+    let mut loaded =
         load_active_run_graph(config, backend, req.run.as_deref(), req.worktree.as_deref())?;
-    let run_id = &loaded.snapshot.run.run_id;
     let cursor = parse_cursor_for_snapshot(&loaded.snapshot, &req.node)?;
     let node_id = cursor.to_node_id()?;
-    let node = verify_active_node_cas(&loaded.snapshot, &node_id, &req, None)?;
-    let captured = CapturedVerifyClaim {
-        claim_revision: node.claim_revision,
-        contract_revision: node.contract_revision,
-        worker_id: node.worker_id.clone(),
-        node_version: node.node_version,
-    };
-    let gate_def = find_profile_gate_def(&loaded.profile, &cursor).ok_or_else(|| {
-        AcddError::new(
-            ErrorCode::WorkflowSchemaInvalid,
-            format!("no gate definition found for '{cursor}'"),
-        )
-    })?;
-    let gate_id = GateId::new(&gate_def.id)?;
-    let machine_gate = find_machine_gate(&loaded.machine_profile, node)?;
-    let target_worktree =
-        resolve_node_worktree(config, &loaded.snapshot.run, node, req.worktree.as_deref());
-    let policy = loaded.path_policy(config, backend, Some(&target_worktree))?;
-    let admitted_scope = container_scope(&loaded.snapshot, node);
-    let is_unscoped_root = node.kind == NodeKind::RootGate && admitted_scope.is_empty();
-    let resolved_commands = resolve_commands(
-        &loaded.profile,
-        &gate_def,
-        &admitted_scope,
-        req.test_target.as_deref(),
+    let initial_node = verify_active_node_cas(&loaded.snapshot, &node_id, &req, None)?;
+    let target_worktree = resolve_bound_node_worktree(
+        config,
+        &loaded.snapshot,
+        initial_node,
+        req.worktree.as_deref(),
     )?;
+    let policy = loaded.path_policy(config, backend, Some(&target_worktree))?;
     let started_at = acdd_core::telemetry::now_utc_iso_ms();
-    let log_relpath = default_log_relpath(&node_id, node.claim_revision);
     let candidate_tree_before = current_scope_tree(&target_worktree, None, &policy)?;
     let pre_changed_paths = diff_scope_changed_paths(
         &target_worktree,
-        node.isolation,
-        node.baseline_commit.as_ref(),
-        node.claim_tree.as_ref(),
+        initial_node.isolation,
+        initial_node.baseline_commit.as_ref(),
+        initial_node.claim_tree.as_ref(),
         &policy,
     )?;
     let pre_obs = ValidatedObservations {
@@ -252,6 +234,62 @@ pub(crate) fn handle_verify_with_failure_return(
         now_utc: started_at.clone(),
         ..ValidatedObservations::default()
     };
+    let initial_admitted_scope = container_scope(&loaded.snapshot, initial_node);
+    let initial_is_unscoped_root =
+        initial_node.kind == NodeKind::RootGate && initial_admitted_scope.is_empty();
+    let initial_scope_mode =
+        crate::machine::scope::effective_scope_mode(&loaded.snapshot, initial_node);
+    let pre_violations = detect_scope_violations(
+        &loaded.snapshot,
+        &loaded.machine_profile,
+        &pre_obs,
+        &initial_admitted_scope,
+        initial_is_unscoped_root,
+        initial_scope_mode,
+    );
+    if pre_violations.is_empty() {
+        if let Some(lazy_plan) = crate::machine::scope::plan_auto_admit_lazy_scope(
+            &loaded.snapshot,
+            &loaded.machine_profile,
+            &pre_obs,
+            initial_node,
+            &pre_changed_paths,
+        )? {
+            let run_id_for_tx = loaded.snapshot.run.run_id.clone();
+            exec_tx_with(backend, |tx| tx.apply_transition_plan(&run_id_for_tx, &lazy_plan))?;
+            loaded.snapshot = backend.load_run_graph(&run_id_for_tx)?.ok_or_else(|| {
+                AcddError::new(
+                    ErrorCode::BackendConflict,
+                    "run disappeared after lazy scope auto-admission",
+                )
+            })?;
+        }
+    }
+    let run_id = &loaded.snapshot.run.run_id;
+    let node = verify_active_node_cas(&loaded.snapshot, &node_id, &req, None)?;
+    let captured = CapturedVerifyClaim {
+        claim_revision: node.claim_revision,
+        contract_revision: node.contract_revision,
+        worker_id: node.worker_id.clone(),
+        node_version: node.node_version,
+        worktree: node.worktree.clone(),
+    };
+    let gate_def = find_profile_gate_def(&loaded.profile, &cursor).ok_or_else(|| {
+        AcddError::new(
+            ErrorCode::WorkflowSchemaInvalid,
+            format!("no gate definition found for '{cursor}'"),
+        )
+    })?;
+    let gate_id = GateId::new(&gate_def.id)?;
+    let machine_gate = find_machine_gate(&loaded.machine_profile, node)?;
+    let admitted_scope = container_scope(&loaded.snapshot, node);
+    let resolved_commands = resolve_commands(
+        &loaded.profile,
+        &gate_def,
+        &admitted_scope,
+        req.test_target.as_deref(),
+    )?;
+    let log_relpath = default_log_relpath(&node_id, node.claim_revision);
     let has_running_mutating_trace = if let Some(ref call_ref) = gate_def.call {
         provider
             .action_capability(call_ref)
@@ -265,13 +303,6 @@ pub(crate) fn handle_verify_with_failure_return(
     } else {
         false
     };
-    let pre_violations = detect_scope_violations(
-        &loaded.snapshot,
-        &loaded.machine_profile,
-        &pre_obs,
-        &admitted_scope,
-        is_unscoped_root,
-    );
     let recovery_only = !pre_violations.is_empty();
     if recovery_only && !has_running_mutating_trace {
         drop(_pre_lock);
@@ -652,6 +683,7 @@ fn run_gate_checks(
         match provider.run_check(&chk.check, &chk.with, req) {
             Ok(DomainCheckOutcome::Passed {
                 summary,
+                diagnostics,
                 execution_digest_salt,
             }) => {
                 results.push(CheckResultRecord {
@@ -659,7 +691,7 @@ fn run_gate_checks(
                     check: check_name.to_owned(),
                     passed: true,
                     summary,
-                    diagnostics: Vec::new(),
+                    diagnostics,
                     execution_digest_salt,
                 });
             }

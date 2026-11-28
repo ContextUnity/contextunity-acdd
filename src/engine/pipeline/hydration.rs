@@ -84,6 +84,11 @@ pub(super) fn extract_typed_with_cache(
         &spec_paths,
         Some(&zones),
     )?;
-    extraction_cache.store(&key, &facts);
+    if let Ok((encoded, length)) = acdd_index::typed_facts::encode_facts_with_len(&facts) {
+        let skeletons = acdd_index::typed_facts::encode_statement_skeletons(&facts.facts);
+        extraction_cache.store_encoded_with_skeletons(&key, &encoded, length, skeletons.as_deref());
+    } else {
+        extraction_cache.store(&key, &facts);
+    }
     Ok(facts)
 }

@@ -5,8 +5,8 @@ use crate::git_ops::worktree::{canonicalize_macos_var, resolve_repo_layout, Repo
 use crate::workflow::{validate_workflow, GateDef, ResolvedWorkflow, WorkflowValidationOptions};
 use crate::store::traits::{StateBackend, StateReader};
 use crate::types::{
-    GateNodeRecord, IsolationMode, ListRunsReq, NodeKind, RunRecord, RunStatus, SaveAction,
-    WorktreeLifecycle,
+    ClaimOutcome, GateNodeRecord, IsolationMode, ListRunsReq, NodeKind, RunGraphSnapshot,
+    RunRecord, RunStatus, SaveAction, WorktreeLifecycle,
 };
 use crate::usecases::config::StateEngineConfig;
 use acdd_core::config::{
@@ -409,6 +409,72 @@ pub fn resolve_node_worktree(
         return canonicalize_macos_var(Path::new(wt));
     }
     canonicalize_macos_var(&config.worktree)
+}
+
+/// Resolve the canonical bound worktree for an actively claimed node, rejecting any explicit
+/// `override_wt` that conflicts with the active claim or task-bound checkout before any scope
+/// admission, trace publication, or freshness observation.
+pub fn resolve_bound_node_worktree(
+    config: &StateEngineConfig,
+    snapshot: &RunGraphSnapshot,
+    node: &GateNodeRecord,
+    override_wt: Option<&Path>,
+) -> Result<PathBuf, AcddError> {
+    let bound_str = snapshot
+        .claims
+        .iter()
+        .rev()
+        .find(|c| {
+            c.node_id == node.node_id
+                && c.outcome == ClaimOutcome::Active
+                && !c.worktree.trim().is_empty()
+        })
+        .map(|c| c.worktree.as_str())
+        .or_else(|| {
+            let task_node = match node.kind {
+                NodeKind::Task => Some(node),
+                NodeKind::TaskGate => node
+                    .parent_id
+                    .as_deref()
+                    .and_then(|pid| snapshot.nodes.iter().find(|n| n.node_id == pid)),
+                _ => None,
+            };
+            task_node.and_then(|t| crate::machine::scope::task_bound_worktree(snapshot, t))
+        })
+        .or_else(|| {
+            node.worktree
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+        })
+        .or_else(|| {
+            snapshot
+                .run
+                .worktree
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+        });
+
+    let bound = bound_str.map(|wt| canonicalize_macos_var(Path::new(wt)));
+    if let Some(wt) = override_wt {
+        let override_canon = canonicalize_macos_var(wt);
+        if let Some(ref expected) = bound {
+            if &override_canon != expected {
+                return Err(AcddError::new(
+                    ErrorCode::ExternalGitDrift,
+                    format!(
+                        "worktree override '{}' conflicts with bound worktree '{}' for node '{}'",
+                        override_canon.display(),
+                        expected.display(),
+                        node.node_id
+                    ),
+                ));
+            }
+        }
+        return Ok(override_canon);
+    }
+    Ok(bound.unwrap_or_else(|| resolve_node_worktree(config, &snapshot.run, node, None)))
 }
 
 /// Canonical helper applying effective `IsolationMode` and `WorktreeLifecycle` to a resolved

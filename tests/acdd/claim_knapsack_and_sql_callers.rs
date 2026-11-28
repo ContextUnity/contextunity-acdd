@@ -847,6 +847,41 @@ fn compact_claim_budget_detail_and_lens_compaction_matrix() {
         );
     }
 
+    // Cold-worktree ClaimResp repo_rrf orientation: empty worktree (no local code-map.sqlite)
+    // falls back to root index and returns external symbols with non-empty indexed signatures
+    // on both synthesize (empty scope) and build (with blueprint cited_symbols).
+    let cold_wt = root.join(".worktrees/cold-orientation-wt");
+    std::fs::create_dir_all(&cold_wt).unwrap();
+    for (gate_scope, label) in [(Vec::new(), "synthesize"), (vec!["src/nonexistent.rs".to_owned()], "build")] {
+        let mut cold_req = sample_claim_request(
+            cold_wt.clone(),
+            vec!["code.symbols".to_owned()],
+            gate_scope,
+            "Investigate unrelated target description",
+            10_000,
+        );
+        cold_req.pre_task_slice = Some(json!({
+            "cited_symbols": ["hot_api"],
+            "canonical_owners": ["src/api.rs"],
+        }));
+        let cold_assembled = GateContextAssembler::assemble(&cold_req, &provider).unwrap();
+        let cold_items = cold_assembled.context_lenses["code.symbols"]["items"]
+            .as_array()
+            .expect("cold-worktree code.symbols items");
+        let rrf_hit = cold_items
+            .iter()
+            .find(|v| {
+                v["qualname"].as_str().is_some_and(|q| q.ends_with("hot_api"))
+                    && v["discovery"].as_str() == Some("repo_rrf")
+            })
+            .unwrap_or_else(|| panic!("{label}: expected repo_rrf hit for hot_api: {cold_items:?}"));
+        let sig = rrf_hit["signature"].as_str().unwrap_or("");
+        assert!(
+            !sig.is_empty() && sig.contains("hot_api"),
+            "{label}: expected non-empty indexed signature on cold-worktree repo_rrf hit: {rrf_hit:?}"
+        );
+    }
+
     // code.tests deduplicates paths and caps at top 8.
     let tests_req = sample_claim_request(
         root.to_path_buf(),

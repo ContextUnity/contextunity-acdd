@@ -304,11 +304,47 @@ fn claim_idempotency_force_takeover_in_place_and_scope_conflict_matrix() {
         steal_remote: false,
         previous_local_pid_alive: None,
     };
+    // Under IsolationMode::Worktree (`ScopeMode::Lazy`), distinct canonical worktrees bypass scope overlap.
+    assert!(admit_claim(&snap, &profile, &obs, &claim_t3).is_ok());
+
+    // Shared explicit/manual worktree falls back to strict TASK_SCOPE_CONFLICT.
+    let mut claim_t3_shared = claim_t3.clone();
+    claim_t3_shared.worktree = "/repo/.worktrees/T1".to_owned();
     assert_eq!(
-        admit_claim(&snap, &profile, &obs, &claim_t3)
+        admit_claim(&snap, &profile, &obs, &claim_t3_shared)
             .unwrap_err()
             .code,
         ErrorCode::TaskScopeConflict
+    );
+
+    // Even with disjoint scopes, two claimed unfinished tasks sharing a canonical worktree are
+    // fenced to `ScopeMode::Strict` (preventing `auto:lazy_scope` cross-task drift).
+    let mut shared_snap = snap.clone();
+    shared_snap
+        .nodes
+        .iter_mut()
+        .find(|n| n.node_id == "task:T3")
+        .unwrap()
+        .scope = vec!["crates/disjoint/**".to_owned()];
+    let c3_shared = admit_claim(&shared_snap, &profile, &obs, &claim_t3_shared).unwrap();
+    apply_claim_in_memory(&mut shared_snap, &c3_shared);
+    let t1_build = shared_snap
+        .nodes
+        .iter()
+        .find(|n| n.node_id == "task:T1:build")
+        .unwrap();
+    let t3_build = shared_snap
+        .nodes
+        .iter()
+        .find(|n| n.node_id == "task:T3:build")
+        .unwrap();
+    assert_eq!(
+        acdd_state::machine::scope::effective_scope_mode(&shared_snap, t1_build),
+        acdd_state::machine::scope::ScopeMode::Strict
+    );
+    assert_eq!(
+        acdd_state::machine::scope::effective_scope_mode(&shared_snap, t3_build),
+        acdd_state::machine::scope::ScopeMode::Strict
     );
 
     // `in_place` single-active constraint rejects claiming T3 while T1 is InProgress.

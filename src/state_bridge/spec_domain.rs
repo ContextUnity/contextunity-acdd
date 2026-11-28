@@ -97,6 +97,7 @@ impl SpecDomainProvider {
                 "spec.deltas_applied verified {} delta(s) across {} spec(s)",
                 report.deltas_checked, report.specs_checked
             ),
+            diagnostics: Vec::new(),
             execution_digest_salt: Some(format!("spec_deltas_live={live_digest}")),
         })
     }

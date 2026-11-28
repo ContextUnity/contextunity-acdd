@@ -142,6 +142,7 @@ impl CodeDomainProvider {
                     "code.signature_scope verified {} scoped file(s) with zero un-scoped external callers",
                     scoped_files.len()
                 ),
+                diagnostics: Vec::new(),
                 execution_digest_salt: Some(format!(
                     "index_generation={index_gen};live_files_digest={live_digest}"
                 )),

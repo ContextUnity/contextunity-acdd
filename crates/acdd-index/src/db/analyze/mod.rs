@@ -2,6 +2,7 @@
 
 mod boundary;
 mod cochange;
+pub use cochange::collect_untouched_cochange_siblings;
 mod common;
 mod entrypoints;
 pub mod hotspots;

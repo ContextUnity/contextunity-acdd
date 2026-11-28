@@ -311,6 +311,29 @@ impl<'conn> LocalFactsBatchWriter<'conn> {
     }
 }
 
+pub struct StatementSkeletonsBatchWriter<'conn> {
+    rows: MultiValueBatch<'conn, 2, BorrowedSqlValue<'static>>,
+}
+
+impl<'conn> StatementSkeletonsBatchWriter<'conn> {
+    pub fn new(conn: &'conn Connection) -> Result<Self> {
+        Ok(Self {
+            rows: MultiValueBatch::new(conn, "INSERT OR REPLACE INTO statement_skeletons VALUES")?,
+        })
+    }
+
+    pub fn push(&mut self, path: &str, blob: Vec<u8>) -> Result<()> {
+        self.rows.push([
+            BorrowedSqlValue::OwnedText(path.to_owned()),
+            BorrowedSqlValue::OwnedBlob(blob),
+        ])
+    }
+
+    pub fn flush(&mut self) -> Result<()> {
+        self.rows.flush()
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct FilePersistenceTimings {
     pub(super) node_id: i64,
@@ -441,6 +464,7 @@ pub(super) fn persist_catalog_files(
 
 struct EncodedLocalFactsEntry {
     blob: Option<Vec<u8>>,
+    skeleton_blob: Option<Vec<u8>>,
     leaf: (String, String),
 }
 
@@ -455,6 +479,7 @@ fn encode_chunk_local_facts(
             .iter_mut()
             .map(|file| EncodedLocalFactsEntry {
                 blob: std::mem::take(&mut file.updated_local_facts),
+                skeleton_blob: None,
                 leaf: std::mem::take(&mut file.local_facts_leaf),
             })
             .collect());
@@ -463,6 +488,7 @@ fn encode_chunk_local_facts(
     let encode = |file: &FileEntry| -> Result<EncodedLocalFactsEntry> {
         let file_facts = facts.get(&file.path).context("missing extracted facts")?;
         let blob = encode_facts(file_facts)?;
+        let skeleton_blob = crate::typed_facts::encode_statement_skeletons(&file_facts.facts);
         let leaf = local_facts_leaf(
             &file.path,
             &file.digest,
@@ -472,6 +498,7 @@ fn encode_chunk_local_facts(
         )?;
         Ok(EncodedLocalFactsEntry {
             blob: Some(blob),
+            skeleton_blob,
             leaf,
         })
     };
@@ -615,11 +642,17 @@ fn persist_local_facts_entry<'tx>(
     local_facts_leaves: &mut std::collections::BTreeMap<String, String>,
     insert_writer: &mut Option<LocalFactsBatchWriter<'tx>>,
     replace_writer: &mut Option<LocalFactsBatchWriter<'tx>>,
+    skeletons_writer: &mut Option<StatementSkeletonsBatchWriter<'tx>>,
 ) -> Result<()> {
     local_facts_leaves.insert(
         std::mem::take(&mut entry.leaf.0),
         std::mem::take(&mut entry.leaf.1),
     );
+    if let Some(skeleton_blob) = entry.skeleton_blob.take() {
+        skeletons_writer
+            .get_or_insert(StatementSkeletonsBatchWriter::new(tx)?)
+            .push(&file.path, skeleton_blob)?;
+    }
     let Some(blob) = entry.blob.take() else {
         return Ok(());
     };
@@ -817,6 +850,7 @@ fn persist_files_impl<'data>(
         .then(|| LocalFactsBatchWriter::new(tx))
         .transpose()?;
     let mut replace_local_facts_writer: Option<LocalFactsBatchWriter<'_>> = None;
+    let mut skeletons_writer: Option<StatementSkeletonsBatchWriter<'_>> = None;
     let mut file_batch =
         MultiValueBatch::<8, BorrowedSqlValue<'_>>::new(tx, "INSERT INTO files VALUES")?;
     let mut owned_search_batch = Vec::<SearchRow>::new();
@@ -880,6 +914,7 @@ fn persist_files_impl<'data>(
                 &mut local_facts_leaves,
                 &mut insert_local_facts_writer,
                 &mut replace_local_facts_writer,
+                &mut skeletons_writer,
             )?;
             let node_id_start = node_id;
             node_id = node_id
@@ -976,6 +1011,9 @@ fn persist_files_impl<'data>(
         writer.flush()?;
     }
     if let Some(writer) = replace_local_facts_writer.as_mut() {
+        writer.flush()?;
+    }
+    if let Some(writer) = skeletons_writer.as_mut() {
         writer.flush()?;
     }
     doc_sections_batch.flush()?;

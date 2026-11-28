@@ -454,9 +454,27 @@ struct_codecs! {
     crate::models::CallableFingerprints { node_id, statements };
 }
 
-validated_struct_codec!(crate::models::StatementFingerprint {
-    hash, line, end_line, token_count
-} => validate_statement_fingerprint);
+impl BinaryEncode for crate::models::StatementFingerprint {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.hash.encode(out);
+        self.line.encode(out);
+        self.end_line.encode(out);
+        self.token_count.encode(out);
+    }
+}
+
+impl BinaryDecode for crate::models::StatementFingerprint {
+    fn decode(input: &[u8], cursor: &mut usize) -> Option<Self> {
+        let value = Self {
+            hash: BinaryDecode::decode(input, cursor)?,
+            skeleton_hash: 0,
+            line: BinaryDecode::decode(input, cursor)?,
+            end_line: BinaryDecode::decode(input, cursor)?,
+            token_count: BinaryDecode::decode(input, cursor)?,
+        };
+        validate_statement_fingerprint(value)
+    }
+}
 validated_struct_codec!(crate::semantic::types::CallableSignature {
     has_receiver, params, return_type
 } => validate_callable_signature);

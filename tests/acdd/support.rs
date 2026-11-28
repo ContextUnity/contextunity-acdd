@@ -197,6 +197,7 @@ impl DomainProvider for TestProvider {
     ) -> anyhow::Result<DomainCheckOutcome> {
         Ok(DomainCheckOutcome::Passed {
             summary: "check passed".to_owned(),
+            diagnostics: Vec::new(),
             execution_digest_salt: Some("salt-v1".to_owned()),
         })
     }

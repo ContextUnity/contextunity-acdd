@@ -18,7 +18,7 @@ use crate::usecases::config::StateEngineConfig;
 use crate::usecases::dto::SubmitReq;
 use crate::usecases::lifecycle::{
     compute_archive_relpath, load_active_run_graph, parse_cursor_for_snapshot,
-    resolve_node_worktree,
+    resolve_bound_node_worktree,
 };
 use crate::usecases::queries::find_profile_gate_def;
 use crate::usecases::verify::{find_machine_gate, resolve_commands, split_qualified_check};
@@ -81,7 +81,7 @@ pub(super) fn inspect_submit_preflight(
     }
     let machine_gate = find_machine_gate(&loaded.machine_profile, &node)?.clone();
     let target_worktree =
-        resolve_node_worktree(config, &loaded.snapshot.run, &node, req.worktree.as_deref());
+        resolve_bound_node_worktree(config, &loaded.snapshot, &node, req.worktree.as_deref())?;
 
     if machine_gate.save.archive
         && !loaded.snapshot.run.is_ephemeral
@@ -142,12 +142,14 @@ pub(super) fn inspect_submit_preflight(
         now_utc: acdd_core::telemetry::now_utc_iso_ms(),
         ..ValidatedObservations::default()
     };
+    let scope_mode = crate::machine::scope::effective_scope_mode(&loaded.snapshot, &node);
     if !detect_scope_violations(
         &loaded.snapshot,
         &loaded.machine_profile,
         &pre_obs,
         &admitted_scope,
         is_unscoped_root,
+        scope_mode,
     )
     .is_empty()
     {

@@ -646,11 +646,61 @@ fn register_rust_crate_anchors<'a>(
         }
     }
 
+    let shadows_root_name = |facts: &Facts, root_name: &str| {
+        facts.nodes.iter().any(|node| {
+            !node.is_test
+                && node.name == root_name
+                && matches!(
+                    node.kind,
+                    crate::models::tags::NodeKind::Module
+                        | crate::models::tags::NodeKind::ModuleDeclaration
+                )
+        }) || facts.references.iter().any(|reference| {
+            reference.kind == "imports"
+                && reference.alias.as_deref() == Some(root_name)
+                && reference.expression != root_name
+        })
+    };
+
+    let mut crate_root_shadowed: HashMap<&'a str, Vec<&'static str>> = HashMap::new();
+    for &(facts, module) in rust_modules {
+        let Some(prefix) = rust_crate_root_prefix(&module.path) else {
+            continue;
+        };
+        let is_root = module.path == "src/lib.rs"
+            || module.path.ends_with("/src/lib.rs")
+            || module.path == "src/main.rs"
+            || module.path.ends_with("/src/main.rs");
+        if !is_root {
+            continue;
+        }
+        for root_name in ["std", "core", "alloc"] {
+            if shadows_root_name(facts, root_name) {
+                crate_root_shadowed
+                    .entry(prefix)
+                    .or_default()
+                    .push(root_name);
+            }
+        }
+    }
+
     let zero_pos = crate::semantic::SourcePosition { line: 0, column: 0 };
-    for &(_, module) in rust_modules {
+    for &(facts, module) in rust_modules {
         let Some(module_id) = context.symbol_id(&module.id) else {
             continue;
         };
+        if let Some(prefix) = rust_crate_root_prefix(&module.path) {
+            if let Some(roots) = crate_root_shadowed.get(prefix) {
+                for &root_name in roots {
+                    context.mark_root_shadowed(&module.path, root_name);
+                }
+            }
+        }
+        for root_name in ["std", "core", "alloc"] {
+            if shadows_root_name(facts, root_name) {
+                context.mark_root_shadowed(&module.path, root_name);
+            }
+        }
         let crate_root = rust_crate_root_prefix(&module.path)
             .and_then(|prefix| crate_roots.get(prefix).copied());
         let super_module = module.qualname.rsplit_once('.').and_then(|(parent, _)| {

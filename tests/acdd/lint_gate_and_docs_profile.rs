@@ -896,4 +896,504 @@ scope: [docs/architecture/guide.md]
     };
     assert_eq!(hand_resp.new_node_status, NodeStatus::Completed);
     assert_eq!(hand_resp.run_status, RunStatus::Completed);
+
+    // Consolidated diff-duplicates, baseline callable identity, real indexed impl trait resolution,
+    // graph-ranked reuse_hint, and pre-truncation batched cochange matrix.
+    {
+        use acdd_core::ports::DomainCheckOutcome;
+        use acdd_index::db::analyze::collect_untouched_cochange_siblings;
+        use acdd_index::db::reader;
+
+        let ws = Workspace::new();
+        let root = ws.root();
+        fs::create_dir_all(root.join("src")).unwrap();
+
+        let base_owner = "\
+pub fn shared_target(v: i32) -> i32 { v + 1 }
+pub fn shared_helper(v: i32) -> i32 { v * 2 }
+pub fn owner_fn(x: i32) -> i32 {
+    let a = x + 10;
+    let b = a * 20;
+    let c = b - 30;
+    let d = c + 40;
+    let e = d * 50;
+    let f = e - 60;
+    shared_target(f) + shared_helper(f)
+}
+pub fn owner_caller_one(x: i32) -> i32 { owner_fn(x) + 1 }
+pub fn owner_caller_two(x: i32) -> i32 { owner_fn(x) + 2 }
+pub fn pre_existing_clone(x: i32) -> i32 {
+    let a = x + 10;
+    let b = a * 20;
+    let c = b - 30;
+    let d = c + 40;
+    let e = d * 50;
+    let f = e - 60;
+    shared_target(f) + shared_helper(f)
+}
+pub struct Original;
+impl Original {
+    pub fn same_name(&self, x: i32) -> i32 {
+        let p = x + 11;
+        let q = p * 22;
+        let r = q - 33;
+        let s = r + 44;
+        let t = s * 55;
+        t - 66
+    }
+}
+pub struct Alpha(pub u32);
+impl From<u32> for Alpha {
+    fn from(v: u32) -> Self {
+        let a = v.wrapping_add(1);
+        let b = a.wrapping_mul(2);
+        let c = b.wrapping_add(3);
+        let d = c.wrapping_mul(4);
+        let e = d.wrapping_add(5);
+        Self(e)
+    }
+}
+pub trait Display {
+    fn render(&self, x: i32) -> i32;
+}
+pub struct CustomA;
+impl Display for CustomA {
+    fn render(&self, x: i32) -> i32 {
+        let a = x + 10;
+        let b = a * 2;
+        let c = b + 3;
+        let d = c * 4;
+        let e = d + 5;
+        e
+    }
+}
+pub struct OwnA;
+impl OwnA {
+    pub fn from(v: u32) -> u32 {
+        let a = v.wrapping_add(10);
+        let b = a.wrapping_mul(20);
+        let c = b.wrapping_add(30);
+        let d = c.wrapping_mul(40);
+        let e = d.wrapping_add(50);
+        e
+    }
+}
+pub fn free_from_a(v: u32) -> u32 {
+    let a = v.wrapping_add(100);
+    let b = a.wrapping_mul(200);
+    let c = b.wrapping_add(300);
+    let d = c.wrapping_mul(400);
+    let e = d.wrapping_add(500);
+    e
+}
+";
+        fs::write(root.join("src/baseline.rs"), base_owner).unwrap();
+        // 9 changed siblings + 4 untouched disallowed siblings each share 2 callees
+        // (`shared_target` + `shared_helper`) with baseline.rs, strictly outranking
+        // `eligible_ninth.rs` (1 shared callee) if truncation happened before filtering.
+        for i in 0..9 {
+            fs::write(
+                root.join(format!("src/changed_{i}.rs")),
+                format!(
+                    "use crate::baseline::{{shared_helper, shared_target}};\npub fn c_{i}(x: i32) -> i32 {{ shared_target(x + {i}) + shared_helper(x) }}\n"
+                ),
+            )
+            .unwrap();
+        }
+        for i in 0..4 {
+            fs::write(
+                root.join(format!("src/disallowed_{i}.rs")),
+                format!(
+                    "use crate::baseline::{{shared_helper, shared_target}};\npub fn d_{i}(x: i32) -> i32 {{ shared_target(x + {i}) + shared_helper(x) }}\n"
+                ),
+            )
+            .unwrap();
+        }
+        fs::write(
+            root.join("src/eligible_ninth.rs"),
+            "use crate::baseline::shared_target;\npub fn ninth(x: i32) -> i32 { shared_target(x + 99) }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        let mut lib_rs = String::from("pub mod baseline;\npub mod eligible_ninth;\n");
+        for i in 0..9 {
+            lib_rs.push_str(&format!("pub mod changed_{i};\n"));
+        }
+        for i in 0..4 {
+            lib_rs.push_str(&format!("pub mod disallowed_{i};\n"));
+        }
+        fs::write(root.join("src/lib.rs"), lib_rs).unwrap();
+
+        init_lint_repo(&ws, "main");
+        ws.build();
+        let adapter = acdd_core::config::Adapter::default();
+        let db_path = root.join(".acdd/code-map.sqlite");
+        let providers = build_domain_providers(root, &adapter, Some(&db_path), Vec::new()).unwrap();
+
+        // 1. Comment + line-shift edit on baseline.rs: pre-existing exact clones & Original::same_name stay Warn (Passed),
+        //    AND higher-count changed_0..8 and exposure-disallowed disallowed_0..3 (2 shared callees each)
+        //    must NEVER leak and must NOT crowd out eligible_ninth.rs (1 shared callee).
+        fs::write(
+            root.join("src/baseline.rs"),
+            format!("// leading line shift comment\n// second comment line\n{base_owner}"),
+        )
+        .unwrap();
+        let mut many_changed: Vec<String> = (0..9).map(|i| format!("src/changed_{i}.rs")).collect();
+        many_changed.push("src/baseline.rs".to_owned());
+        let disallowed_paths: Vec<String> =
+            (0..4).map(|i| format!("src/disallowed_{i}.rs")).collect();
+        let exposure_policy = acdd_core::path_policy::WorkspacePathPolicy::from_workspace_config(
+            ".acdd/state.sqlite",
+            ".acdd/code-map.sqlite",
+            disallowed_paths.clone(),
+        );
+        let check_req = DomainCheckReq {
+            run_id: "xray-check".parse().unwrap(),
+            node_cursor: "t1.build".parse().unwrap(),
+            gate_id: "build".parse().unwrap(),
+            workspace_root: root.to_path_buf(),
+            worktree: root.to_path_buf(),
+            admitted_scope: vec!["src/baseline.rs".to_owned()],
+            changed_paths: many_changed.clone(),
+            test_target: None,
+            path_policy: exposure_policy.clone(),
+            baseline_ref: Some("HEAD".to_owned()),
+            node_tags: vec![],
+        };
+        let outcome = providers
+            .run_check("code.lint", &json!({ "categories": ["duplicates"] }), &check_req)
+            .unwrap();
+        match outcome {
+            DomainCheckOutcome::Passed { diagnostics, .. } => {
+                assert!(
+                    diagnostics
+                        .iter()
+                        .any(|d| d.starts_with("[xray.cochange]") && d.contains("src/eligible_ninth.rs")),
+                    "expected [xray.cochange] for eligible_ninth.rs in passing diagnostics: {diagnostics:?}"
+                );
+                assert!(
+                    diagnostics
+                        .iter()
+                        .all(|d| !disallowed_paths.iter().any(|p| d.contains(p))),
+                    "exposure-disallowed siblings must never leak into [xray.cochange]: {diagnostics:?}"
+                );
+            }
+            other => panic!("comment/line-shift edit must pass: {other:?}"),
+        }
+        let conn = reader::open_locked(&db_path, root).unwrap();
+        let siblings = collect_untouched_cochange_siblings(
+            &conn,
+            root,
+            &many_changed,
+            Some(&exposure_policy),
+            3,
+        )
+        .unwrap();
+        assert!(
+            siblings.iter().any(|(_, sib, _)| sib == "src/eligible_ninth.rs"),
+            "higher-count changed/disallowed siblings must not suppress eligible_ninth.rs: {siblings:?}"
+        );
+        assert!(
+            siblings
+                .iter()
+                .all(|(_, sib, _)| !disallowed_paths.contains(sib)),
+            "exposure-disallowed siblings must not leak from collect_untouched_cochange_siblings: {siblings:?}"
+        );
+        drop(conn);
+
+        // 2. Canonical callable structural identity: adding Introduced::same_name in the same file
+        //    as Original::same_name MUST promote to duplicates.exact Error.
+        fs::write(
+            root.join("src/baseline.rs"),
+            format!(
+                "{base_owner}\npub struct Introduced;\nimpl Introduced {{\n    pub fn same_name(&self, x: i32) -> i32 {{\n        let p = x + 11;\n        let q = p * 22;\n        let r = q - 33;\n        let s = r + 44;\n        let t = s * 55;\n        t - 66\n    }}\n}}\n"
+            ),
+        )
+        .unwrap();
+        let same_name_outcome = providers
+            .run_check(
+                "code.lint",
+                &json!({ "categories": ["duplicates"] }),
+                &DomainCheckReq {
+                    admitted_scope: vec!["src/baseline.rs".to_owned()],
+                    changed_paths: vec!["src/baseline.rs".to_owned()],
+                    ..check_req.clone()
+                },
+            )
+            .unwrap();
+        assert!(
+            matches!(
+                same_name_outcome,
+                DomainCheckOutcome::Failed { ref diagnostics, .. }
+                    if diagnostics.iter().any(|d| d.contains("duplicates.exact"))
+            ),
+            "Introduced::same_name in same file as Original::same_name must fail with duplicates.exact: {same_name_outcome:?}"
+        );
+        fs::write(root.join("src/baseline.rs"), base_owner).unwrap();
+
+        // 3. Real indexed impl trait resolution matrix:
+        //    (a) std `impl From<u32> for Beta` (<=6 stmts, different literals) -> Passed (exempted!)
+        //    (b) local custom `impl Display for CustomB` -> Failed (`duplicates.similar`, NOT exempted!)
+        //    (c) inherent `impl OwnB::from` -> Failed (`duplicates.similar`, NOT exempted!)
+        //    (d) free function `free_from_b` -> Failed (`duplicates.similar`, NOT exempted!)
+        for (rel_path, code, expect_pass) in [
+            (
+                "src/std_from.rs",
+                "pub struct Beta(pub u32);\nimpl From<u32> for Beta {\n    fn from(v: u32) -> Self {\n        let a = v.wrapping_add(91);\n        let b = a.wrapping_mul(92);\n        let c = b.wrapping_add(93);\n        let d = c.wrapping_mul(94);\n        let e = d.wrapping_add(95);\n        Self(e)\n    }\n}\n",
+                true,
+            ),
+            (
+                "src/custom_display.rs",
+                "use crate::baseline::Display;\npub struct CustomB;\nimpl Display for CustomB {\n    fn render(&self, x: i32) -> i32 {\n        let a = x + 71;\n        let b = a * 72;\n        let c = b + 73;\n        let d = c * 74;\n        let e = d + 75;\n        e\n    }\n}\n",
+                false,
+            ),
+            (
+                "src/inherent_from.rs",
+                "pub struct OwnB;\nimpl OwnB {\n    pub fn from(v: u32) -> u32 {\n        let a = v.wrapping_add(61);\n        let b = a.wrapping_mul(62);\n        let c = b.wrapping_add(63);\n        let d = c.wrapping_mul(64);\n        let e = d.wrapping_add(65);\n        e\n    }\n}\n",
+                false,
+            ),
+            (
+                "src/free_from.rs",
+                "pub fn free_from_b(v: u32) -> u32 {\n    let a = v.wrapping_add(81);\n    let b = a.wrapping_mul(82);\n    let c = b.wrapping_add(83);\n    let d = c.wrapping_mul(84);\n    let e = d.wrapping_add(85);\n    e\n}\n",
+                false,
+            ),
+            (
+                "src/macro_local_from.rs",
+                "macro_rules! define_local_from {\n    () => {\n        pub trait From<T> {\n            fn from(v: T) -> Self;\n        }\n    };\n}\ndefine_local_from!();\npub struct MacroAlpha(pub u32);\nimpl From<u32> for MacroAlpha {\n    fn from(v: u32) -> Self {\n        let a = v.wrapping_add(11);\n        let b = a.wrapping_mul(12);\n        let c = b.wrapping_add(13);\n        let d = c.wrapping_mul(14);\n        let e = d.wrapping_add(15);\n        Self(e)\n    }\n}\npub struct MacroBeta(pub u32);\nimpl From<u32> for MacroBeta {\n    fn from(v: u32) -> Self {\n        let a = v.wrapping_add(21);\n        let b = a.wrapping_mul(22);\n        let c = b.wrapping_add(23);\n        let d = c.wrapping_mul(24);\n        let e = d.wrapping_add(25);\n        Self(e)\n    }\n}\n",
+                false,
+            ),
+            (
+                "src/local_from_control.rs",
+                "pub trait LocalFrom<T> {\n    fn from(v: T) -> Self;\n}\npub struct LocalAlpha(pub u32);\nimpl LocalFrom<u32> for LocalAlpha {\n    fn from(v: u32) -> Self {\n        let a = v.wrapping_add(31);\n        let b = a.wrapping_mul(32);\n        let c = b.wrapping_add(33);\n        let d = c.wrapping_mul(34);\n        let e = d.wrapping_add(35);\n        Self(e)\n    }\n}\npub struct LocalBeta(pub u32);\nimpl LocalFrom<u32> for LocalBeta {\n    fn from(v: u32) -> Self {\n        let a = v.wrapping_add(41);\n        let b = a.wrapping_mul(42);\n        let c = b.wrapping_add(43);\n        let d = c.wrapping_mul(44);\n        let e = d.wrapping_add(45);\n        Self(e)\n    }\n}\n",
+                false,
+            ),
+            (
+                "src/macro_local_qualified_std_from.rs",
+                "#![no_std]\nmacro_rules! local_std {\n    () => {\n        pub mod std {\n            pub mod convert {\n                pub trait From<T> {\n                    fn from(v: T) -> Self;\n                }\n            }\n        }\n    };\n}\nlocal_std!();\npub struct QualMacroAlpha(pub u32);\nimpl std::convert::From<u32> for QualMacroAlpha {\n    fn from(v: u32) -> Self {\n        let a = v.wrapping_add(11);\n        let b = a.wrapping_mul(12);\n        let c = b.wrapping_add(13);\n        let d = c.wrapping_mul(14);\n        let e = d.wrapping_add(15);\n        Self(e)\n    }\n}\npub struct QualMacroBeta(pub u32);\nimpl std::convert::From<u32> for QualMacroBeta {\n    fn from(v: u32) -> Self {\n        let a = v.wrapping_add(21);\n        let b = a.wrapping_mul(22);\n        let c = b.wrapping_add(23);\n        let d = c.wrapping_mul(24);\n        let e = d.wrapping_add(25);\n        Self(e)\n    }\n}\n",
+                false,
+            ),
+            (
+                "src/std_qualified_from.rs",
+                "pub struct QualStdAlpha(pub u32);\nimpl std::convert::From<u32> for QualStdAlpha {\n    fn from(v: u32) -> Self {\n        let a = v.wrapping_add(51);\n        let b = a.wrapping_mul(52);\n        let c = b.wrapping_add(53);\n        let d = c.wrapping_mul(54);\n        let e = d.wrapping_add(55);\n        Self(e)\n    }\n}\npub struct QualStdBeta(pub u32);\nimpl std::convert::From<u32> for QualStdBeta {\n    fn from(v: u32) -> Self {\n        let a = v.wrapping_add(61);\n        let b = a.wrapping_mul(62);\n        let c = b.wrapping_add(63);\n        let d = c.wrapping_mul(64);\n        let e = d.wrapping_add(65);\n        Self(e)\n    }\n}\n",
+                true,
+            ),
+            (
+                "src/local_mod_std_from.rs",
+                "#![no_std]\npub mod std {\n    pub mod convert {\n        pub trait From<T> {\n            fn from(v: T) -> Self;\n        }\n    }\n}\npub struct LocalModAlpha(pub u32);\nimpl std::convert::From<u32> for LocalModAlpha {\n    fn from(v: u32) -> Self {\n        let a = v.wrapping_add(71);\n        let b = a.wrapping_mul(72);\n        let c = b.wrapping_add(73);\n        let d = c.wrapping_mul(74);\n        let e = d.wrapping_add(75);\n        Self(e)\n    }\n}\npub struct LocalModBeta(pub u32);\nimpl std::convert::From<u32> for LocalModBeta {\n    fn from(v: u32) -> Self {\n        let a = v.wrapping_add(81);\n        let b = a.wrapping_mul(82);\n        let c = b.wrapping_add(83);\n        let d = c.wrapping_mul(84);\n        let e = d.wrapping_add(85);\n        Self(e)\n    }\n}\n",
+                false,
+            ),
+            (
+                "src/abs_std_qualified_from.rs",
+                "pub struct AbsStdAlpha(pub u32);\nimpl ::std::convert::From<u32> for AbsStdAlpha {\n    fn from(v: u32) -> Self {\n        let a = v.wrapping_add(91);\n        let b = a.wrapping_mul(92);\n        let c = b.wrapping_add(93);\n        let d = c.wrapping_mul(94);\n        let e = d.wrapping_add(95);\n        Self(e)\n    }\n}\npub struct AbsStdBeta(pub u32);\nimpl ::std::convert::From<u32> for AbsStdBeta {\n    fn from(v: u32) -> Self {\n        let a = v.wrapping_add(101);\n        let b = a.wrapping_mul(102);\n        let c = b.wrapping_add(103);\n        let d = c.wrapping_mul(104);\n        let e = d.wrapping_add(105);\n        Self(e)\n    }\n}\n",
+                true,
+            ),
+            (
+                "src/abs_core_qualified_from.rs",
+                "pub struct AbsCoreAlpha(pub u32);\nimpl ::core::convert::From<u32> for AbsCoreAlpha {\n    fn from(v: u32) -> Self {\n        let a = v.wrapping_add(111);\n        let b = a.wrapping_mul(112);\n        let c = b.wrapping_add(113);\n        let d = c.wrapping_mul(114);\n        let e = d.wrapping_add(115);\n        Self(e)\n    }\n}\npub struct AbsCoreBeta(pub u32);\nimpl ::core::convert::From<u32> for AbsCoreBeta {\n    fn from(v: u32) -> Self {\n        let a = v.wrapping_add(121);\n        let b = a.wrapping_mul(122);\n        let c = b.wrapping_add(123);\n        let d = c.wrapping_mul(124);\n        let e = d.wrapping_add(125);\n        Self(e)\n    }\n}\n",
+                true,
+            ),
+            (
+                "src/abs_alias_std_from.rs",
+                "#![no_std]\nextern crate self as std;\npub mod convert { pub trait From<T> { fn from(v: T) -> Self; } }\npub struct AbsAliasAlpha(pub u32);\nimpl ::std::convert::From<u32> for AbsAliasAlpha {\n    fn from(v: u32) -> Self {\n        let a = v.wrapping_add(131);\n        let b = a.wrapping_mul(132);\n        let c = b.wrapping_add(133);\n        let d = c.wrapping_mul(134);\n        let e = d.wrapping_add(135);\n        Self(e)\n    }\n}\npub struct AbsAliasBeta(pub u32);\nimpl ::std::convert::From<u32> for AbsAliasBeta {\n    fn from(v: u32) -> Self {\n        let a = v.wrapping_add(141);\n        let b = a.wrapping_mul(142);\n        let c = b.wrapping_add(143);\n        let d = c.wrapping_mul(144);\n        let e = d.wrapping_add(145);\n        Self(e)\n    }\n}\n",
+                false,
+            ),
+        ] {
+            fs::write(root.join(rel_path), code).unwrap();
+            let res = providers
+                .run_check(
+                    "code.lint",
+                    &json!({ "categories": ["duplicates"] }),
+                    &DomainCheckReq {
+                        admitted_scope: vec![rel_path.to_owned()],
+                        changed_paths: vec![rel_path.to_owned()],
+                        ..check_req.clone()
+                    },
+                )
+                .unwrap();
+            if expect_pass {
+                assert!(
+                    matches!(res, DomainCheckOutcome::Passed { .. }),
+                    "expected recognized std trait mapper in {rel_path} to pass, got {res:?}"
+                );
+            } else {
+                assert!(
+                    matches!(
+                        res,
+                        DomainCheckOutcome::Failed { ref diagnostics, .. }
+                            if diagnostics.iter().any(|d| d.contains("duplicates.similar"))
+                    ),
+                    "expected non-std/custom/inherent/free clone in {rel_path} to fail duplicates.similar, got {res:?}"
+                );
+            }
+            fs::remove_file(root.join(rel_path)).unwrap();
+        }
+
+        // 3b. Cross-file trait-name isolation & crate-root extern crate alias shadowing (#716):
+        //     (a) Unrelated `pub trait Display` in `src/local_fmt.rs` must NOT block `::std::fmt::Display` in `src/std_display.rs`.
+        //     (b) Crate-root `extern crate self as std;` + re-export alias `From` in `src/lib.rs` MUST shadow `::std::convert::From` in `src/probe.rs`.
+        fs::write(
+            root.join("src/local_fmt.rs"),
+            "pub trait Display { fn fmt(&self) -> u32; }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/std_display.rs"),
+            "pub struct StdDispA(pub u32);\nimpl ::std::fmt::Display for StdDispA {\n    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {\n        let a = self.0.wrapping_add(1);\n        let b = a.wrapping_mul(2);\n        let c = b.wrapping_add(3);\n        let d = c.wrapping_mul(4);\n        write!(f, \"{}\", d)\n    }\n}\npub struct StdDispB(pub u32);\nimpl ::std::fmt::Display for StdDispB {\n    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {\n        let a = self.0.wrapping_add(11);\n        let b = a.wrapping_mul(12);\n        let c = b.wrapping_add(13);\n        let d = c.wrapping_mul(14);\n        write!(f, \"{}\", d)\n    }\n}\n",
+        )
+        .unwrap();
+        let cross_file_std = providers
+            .run_check(
+                "code.lint",
+                &json!({ "categories": ["duplicates"] }),
+                &DomainCheckReq {
+                    admitted_scope: vec!["src/std_display.rs".to_owned()],
+                    changed_paths: vec!["src/std_display.rs".to_owned()],
+                    ..check_req.clone()
+                },
+            )
+            .unwrap();
+        assert!(
+            matches!(cross_file_std, DomainCheckOutcome::Passed { .. }),
+            "unrelated local Display trait must not block ::std::fmt::Display: {cross_file_std:?}"
+        );
+        fs::remove_file(root.join("src/local_fmt.rs")).unwrap();
+        fs::remove_file(root.join("src/std_display.rs")).unwrap();
+
+        fs::write(
+            root.join("src/lib.rs"),
+            "#![no_std]\nextern crate self as std;\npub mod other { pub trait MyFrom<T> { fn from(v: T) -> Self; } }\npub mod convert { pub use crate::other::MyFrom as From; }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/probe.rs"),
+            "pub struct ProbeA(pub u32);\nimpl ::std::convert::From<u32> for ProbeA {\n    fn from(v: u32) -> Self {\n        let a = v.wrapping_add(151);\n        let b = a.wrapping_mul(152);\n        let c = b.wrapping_add(153);\n        let d = c.wrapping_mul(154);\n        let e = d.wrapping_add(155);\n        Self(e)\n    }\n}\npub struct ProbeB(pub u32);\nimpl ::std::convert::From<u32> for ProbeB {\n    fn from(v: u32) -> Self {\n        let a = v.wrapping_add(161);\n        let b = a.wrapping_mul(162);\n        let c = b.wrapping_add(163);\n        let d = c.wrapping_mul(164);\n        let e = d.wrapping_add(165);\n        Self(e)\n    }\n}\n",
+        )
+        .unwrap();
+        let crate_alias_shadowed = providers
+            .run_check(
+                "code.lint",
+                &json!({ "categories": ["duplicates"] }),
+                &DomainCheckReq {
+                    admitted_scope: vec!["src/probe.rs".to_owned()],
+                    changed_paths: vec!["src/probe.rs".to_owned()],
+                    ..check_req.clone()
+                },
+            )
+            .unwrap();
+        assert!(
+            matches!(
+                crate_alias_shadowed,
+                DomainCheckOutcome::Failed { ref diagnostics, .. }
+                    if diagnostics.iter().any(|d| d.contains("duplicates.similar"))
+            ),
+            "crate-root extern crate self as std must shadow ::std::convert::From in src/probe.rs: {crate_alias_shadowed:?}"
+        );
+        fs::remove_file(root.join("src/lib.rs")).unwrap();
+        fs::remove_file(root.join("src/probe.rs")).unwrap();
+
+        // (c) `#![no_std]` with genuine `extern crate alloc;` must NOT shadow `::alloc::string::ToString`.
+        fs::write(
+            root.join("src/alloc_no_std.rs"),
+            "#![no_std]\nextern crate alloc;\npub struct AllocA(pub u32);\nimpl ::alloc::string::ToString for AllocA {\n    fn to_string(&self) -> ::alloc::string::String {\n        let a = self.0.wrapping_add(1);\n        let b = a.wrapping_mul(2);\n        let c = b.wrapping_add(3);\n        let d = c.wrapping_mul(4);\n        ::alloc::format!(\"{}\", d)\n    }\n}\npub struct AllocB(pub u32);\nimpl ::alloc::string::ToString for AllocB {\n    fn to_string(&self) -> ::alloc::string::String {\n        let a = self.0.wrapping_add(11);\n        let b = a.wrapping_mul(12);\n        let c = b.wrapping_add(13);\n        let d = c.wrapping_mul(14);\n        ::alloc::format!(\"{}\", d)\n    }\n}\n",
+        )
+        .unwrap();
+        let alloc_no_std = providers
+            .run_check(
+                "code.lint",
+                &json!({ "categories": ["duplicates"] }),
+                &DomainCheckReq {
+                    admitted_scope: vec!["src/alloc_no_std.rs".to_owned()],
+                    changed_paths: vec!["src/alloc_no_std.rs".to_owned()],
+                    ..check_req.clone()
+                },
+            )
+            .unwrap();
+        assert!(
+            matches!(alloc_no_std, DomainCheckOutcome::Passed { .. }),
+            "genuine #![no_std] extern crate alloc; must not shadow ::alloc::string::ToString: {alloc_no_std:?}"
+        );
+        fs::remove_file(root.join("src/alloc_no_std.rs")).unwrap();
+
+        // 4. Partial-similarity (0.45..0.80) reuse_hint ranked by inbound callers without hardcoded repo names.
+        let partial_overlap = "\
+use crate::baseline::{shared_helper, shared_target};
+pub fn partial_probe(x: i32) -> i32 {
+    let a = x + 10;
+    let b = a * 20;
+    let c = b - 30;
+    let d = c + 40;
+    let extra = shared_helper(d) + 777;
+    let extra2 = extra * 3;
+    shared_target(extra2)
+}
+";
+        fs::write(root.join("src/partial_overlap.rs"), partial_overlap).unwrap();
+        let hint_outcome = providers
+            .run_check(
+                "code.lint",
+                &json!({ "categories": ["duplicates"] }),
+                &DomainCheckReq {
+                    admitted_scope: vec!["src/partial_overlap.rs".to_owned()],
+                    changed_paths: vec!["src/partial_overlap.rs".to_owned()],
+                    ..check_req.clone()
+                },
+            )
+            .unwrap();
+        match hint_outcome {
+            DomainCheckOutcome::Passed { diagnostics, .. } => {
+                let hint = diagnostics
+                    .iter()
+                    .find(|d| d.starts_with("[xray.reuse_hint]"))
+                    .unwrap_or_else(|| panic!("expected [xray.reuse_hint] diagnostic: {diagnostics:?}"));
+                assert!(hint.contains("owner_fn"), "expected canonical owner_fn in hint: {hint}");
+                assert!(hint.contains("2 inbound callers"), "expected inbound caller rank in hint: {hint}");
+                assert!(
+                    !hint.contains("acdd-core")
+                        && !hint.contains("contextunity-acdd")
+                        && !hint.contains("build_manifests.rs"),
+                    "reuse hint must not contain hardcoded repo names: {hint}"
+                );
+            }
+            other => panic!("expected Passing outcome with reuse_hint, got {other:?}"),
+        }
+        fs::remove_file(root.join("src/partial_overlap.rs")).unwrap();
+
+        // 5. Newly introduced 7-stmt literal-masked clone -> Failed (`duplicates.similar`).
+        let masked_clone = "\
+use crate::baseline::{shared_helper, shared_target};
+pub fn new_masked_clone(x: i32) -> i32 {
+    let a = x + 101;
+    let b = a * 202;
+    let c = b - 303;
+    let d = c + 404;
+    let e = d * 505;
+    let f = e - 606;
+    shared_target(f) + shared_helper(f)
+}
+";
+        fs::write(root.join("src/new_clone.rs"), masked_clone).unwrap();
+        let masked_outcome = providers
+            .run_check(
+                "code.lint",
+                &json!({ "categories": ["duplicates"] }),
+                &DomainCheckReq {
+                    admitted_scope: vec!["src/new_clone.rs".to_owned()],
+                    changed_paths: vec!["src/new_clone.rs".to_owned()],
+                    ..check_req
+                },
+            )
+            .unwrap();
+        assert!(
+            matches!(
+                masked_outcome,
+                DomainCheckOutcome::Failed { ref diagnostics, .. }
+                    if diagnostics.iter().any(|d| d.contains("duplicates.similar"))
+            ),
+            "newly introduced literal-masked clone must fail duplicates.similar: {masked_outcome:?}"
+        );
+    }
 }

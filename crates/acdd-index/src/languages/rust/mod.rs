@@ -710,7 +710,7 @@ static RUST_SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
         "struct_item",
         "enum_item",
     ],
-    imports: &["use_declaration"],
+    imports: &["use_declaration", "extern_crate_declaration"],
     import_forms: &[("use_declaration", ImportKind::Module)],
     comments: &["line_comment", "block_comment"],
     visibility_modifiers: &[("visibility_modifier", Visibility::Public)],
@@ -943,6 +943,24 @@ impl LanguageProfile for Rust {
         Some(ScopeAnalysis::rust(node, source))
     }
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
+        if ctx.node.kind() == "extern_crate_declaration" {
+            let raw = text(ctx.node, ctx.source).trim_end_matches(';');
+            let tokens: Vec<&str> = raw.split_whitespace().collect();
+            let crate_name = tokens
+                .windows(2)
+                .find_map(|w| (w[0] == "crate").then_some(w[1]))
+                .unwrap_or_default()
+                .to_owned();
+            let alias = tokens
+                .windows(2)
+                .find_map(|w| (w[0] == "as").then_some(w[1]))
+                .map(ToOwned::to_owned);
+            if !crate_name.is_empty() {
+                let bound_name = alias.unwrap_or_else(|| crate_name.clone());
+                ctx.import(facts, crate_name.clone(), Some(bound_name), Some(crate_name));
+            }
+            return;
+        }
         if ctx.node.kind() != "use_declaration" {
             return;
         }

@@ -20,6 +20,7 @@ use std::{
 
 const MAGIC_V4: &[u8] = b"ACDD-EXTRACTION-FACTS\0\x04";
 const MAGIC_V5: &[u8] = b"ACDD-EXTRACTION-FACTS\0\x05";
+const MAGIC_V6: &[u8] = b"ACDD-EXTRACTION-FACTS\0\x06";
 const CHECKSUM_BYTES: usize = 32;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -253,8 +254,13 @@ pub struct ExtractionCache {
     root: Option<PathBuf>,
 }
 
-/// Decoded extraction facts, encoded bytes, and the prior component edges.
-pub type BuildCacheEntry = (TypedFacts, Option<Vec<u8>>, Option<Vec<Edge>>);
+/// Decoded extraction facts, encoded bytes, prior component edges, and optional skeleton blob.
+pub type BuildCacheEntry = (
+    TypedFacts,
+    Option<Vec<u8>>,
+    Option<Vec<Edge>>,
+    Option<Vec<u8>>,
+);
 
 impl ExtractionCache {
     /// Creates a new extraction cache backed by an optional root path.
@@ -268,14 +274,14 @@ impl ExtractionCache {
             .map(|(facts, _)| facts)
     }
 
-    /// Loads facts and, for V5 entries, their canonical encoded payload.
+    /// Loads facts and, for V5/V6 entries, their canonical encoded payload.
     pub fn load_with_encoded(
         &self,
         key: &str,
         max_payload_bytes: u64,
     ) -> Option<(TypedFacts, Option<Vec<u8>>)> {
         self.load_for_build(key, max_payload_bytes)
-            .map(|(facts, encoded, _)| (facts, encoded))
+            .map(|(facts, encoded, _, _)| (facts, encoded))
     }
 
     /// Loads clean facts and the component edges present in the encoded payload.
@@ -304,16 +310,32 @@ impl ExtractionCache {
         self.store_entry(key, |bytes| encode_entry_into(key, facts, bytes).is_ok())
     }
 
-    /// Publishes a canonical compressed local-facts payload.
-    pub fn store_encoded(&self, key: &str, encoded_facts: &[u8], uncompressed_len: u64) -> bool {
+    /// Publishes a canonical compressed local-facts payload alongside optional statement skeletons.
+    pub fn store_encoded_with_skeletons(
+        &self,
+        key: &str,
+        encoded_facts: &[u8],
+        uncompressed_len: u64,
+        skeleton_blob: Option<&[u8]>,
+    ) -> bool {
         self.store_entry(key, |bytes| {
             bytes.clear();
-            bytes.extend_from_slice(MAGIC_V5);
+            bytes.extend_from_slice(MAGIC_V6);
             key.encode(bytes);
             bytes.extend_from_slice(&(encoded_facts.len() as u64).to_le_bytes());
             bytes.extend_from_slice(&uncompressed_len.to_le_bytes());
             bytes.extend_from_slice(&sha256_bytes(encoded_facts));
             bytes.extend_from_slice(encoded_facts);
+            match skeleton_blob {
+                Some(skeletons) if !skeletons.is_empty() => {
+                    bytes.extend_from_slice(&(skeletons.len() as u64).to_le_bytes());
+                    bytes.extend_from_slice(&sha256_bytes(skeletons));
+                    bytes.extend_from_slice(skeletons);
+                }
+                _ => {
+                    bytes.extend_from_slice(&0u64.to_le_bytes());
+                }
+            }
             true
         })
     }
@@ -451,7 +473,25 @@ fn decode_entry_with_encoded(
     max_payload_bytes: u64,
 ) -> Option<(TypedFacts, Option<Vec<u8>>)> {
     decode_entry_for_build(bytes, expected_key, max_payload_bytes)
-        .map(|(facts, encoded, _)| (facts, encoded))
+        .map(|(facts, encoded, _, _)| (facts, encoded))
+}
+
+fn decode_checked_payload<'a>(
+    bytes: &'a [u8],
+    cursor: &mut usize,
+    payload_len: u64,
+) -> Option<&'a [u8]> {
+    let checksum_end = cursor.checked_add(CHECKSUM_BYTES)?;
+    let stored_checksum = bytes.get(*cursor..checksum_end)?;
+    *cursor = checksum_end;
+    let len = usize::try_from(payload_len).ok()?;
+    let payload_end = cursor.checked_add(len)?;
+    let payload = bytes.get(*cursor..payload_end)?;
+    if sha256_bytes(payload).as_slice() != stored_checksum {
+        return None;
+    }
+    *cursor = payload_end;
+    Some(payload)
 }
 
 fn decode_entry_for_build(
@@ -459,8 +499,10 @@ fn decode_entry_for_build(
     expected_key: &str,
     max_payload_bytes: u64,
 ) -> Option<BuildCacheEntry> {
+    let v6 = bytes.starts_with(MAGIC_V6);
     let v5 = bytes.starts_with(MAGIC_V5);
-    if !v5 && !bytes.starts_with(MAGIC_V4) {
+    let compressed_format = v5 || v6;
+    if !compressed_format && !bytes.starts_with(MAGIC_V4) {
         return None;
     }
     let mut cursor = MAGIC_V4.len();
@@ -474,7 +516,7 @@ fn decode_entry_for_build(
     if payload_len > max_payload_bytes {
         return None;
     }
-    let uncompressed_len = if v5 {
+    let uncompressed_len = if compressed_format {
         let length = u64::decode(bytes, &mut cursor)?;
         if length > max_payload_bytes {
             return None;
@@ -483,13 +525,21 @@ fn decode_entry_for_build(
     } else {
         None
     };
-    let checksum_end = cursor.checked_add(CHECKSUM_BYTES)?;
-    let stored_checksum = bytes.get(cursor..checksum_end)?;
-    cursor = checksum_end;
-    let payload_len = usize::try_from(payload_len).ok()?;
-    let payload_end = cursor.checked_add(payload_len)?;
-    let payload = bytes.get(cursor..payload_end)?;
-    if payload_end != bytes.len() || sha256_bytes(payload).as_slice() != stored_checksum {
+    let payload = decode_checked_payload(bytes, &mut cursor, payload_len)?;
+    let skeleton_blob = if v6 {
+        let skeleton_len = u64::decode(bytes, &mut cursor)?;
+        if skeleton_len > max_payload_bytes {
+            return None;
+        }
+        if skeleton_len > 0 {
+            Some(decode_checked_payload(bytes, &mut cursor, skeleton_len)?.to_vec())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    if cursor != bytes.len() {
         return None;
     }
     let mut raw = Vec::new();
@@ -508,13 +558,18 @@ fn decode_entry_for_build(
         payload
     };
     let mut payload_cursor = 0;
-    let mut facts = if v5 {
+    let mut facts = if compressed_format {
         TypedFacts::decode_with_string_table(decoded, &mut payload_cursor)?
     } else {
         TypedFacts::decode(decoded, &mut payload_cursor)?
     };
     if payload_cursor != decoded.len() || facts.flows.has_invalid_named_uncertainty_carriers() {
         return None;
+    }
+    if let Some(ref skel) = skeleton_blob {
+        if !crate::typed_facts::skeletons::hydrate_statement_skeletons(&mut facts.facts, skel) {
+            return None;
+        }
     }
     let mut components = Vec::new();
     facts.edges.retain(|edge| {
@@ -534,8 +589,9 @@ fn decode_entry_for_build(
         .retain_nodes(|node| node.kind != crate::models::tags::NodeKind::Component);
     Some((
         facts,
-        v5.then(|| payload.to_vec()),
+        compressed_format.then(|| payload.to_vec()),
         (!has_component_node).then_some(components),
+        skeleton_blob,
     ))
 }
 

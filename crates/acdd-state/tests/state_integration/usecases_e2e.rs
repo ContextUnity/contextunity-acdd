@@ -132,6 +132,10 @@ fn seam_git_e2e_claim_verify_submit_and_archive() {
         "e2e.yaml",
         r#"version: 2
 inherit: code
+protected_paths: [Cargo.toml]
+scope_args_by_pattern:
+  "README.md": "--doc-scope"
+  "src/**": "--src-scope"
 commands:
   test:
     command: "true"
@@ -141,7 +145,7 @@ commands:
   ok_cmd:
     command: "true"
   test_cmd:
-    command: "sh -c 'exit 0' -- {test_filter}"
+    command: "sh -c 'exit 0' -- {scope_target} {test_filter}"
     test_filter: "--filter {test}"
 git:
   isolation: worktree
@@ -387,6 +391,14 @@ gates:
     .unwrap();
     let task_wt = PathBuf::from(&t1_claim.worktree);
     assert!(task_wt.is_dir());
+    // Under IsolationMode::Worktree (`ScopeMode::Lazy`), mixed protected + eligible edits fail
+    // closed with OUT_OF_SCOPE_CHANGES without mutating `extended_scope`.
+    let orig_cargo = fs::read_to_string(task_wt.join("Cargo.toml")).ok();
+    fs::write(
+        task_wt.join("Cargo.toml"),
+        "[package]\nname = \"blocked\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
     fs::write(task_wt.join("README.md"), "# Out of scope edit\n").unwrap();
     assert_eq!(
         verify_node(
@@ -395,14 +407,55 @@ gates:
             "t1.build",
             "builder-1",
             Some("t1_tests"),
-            Some(t1_claim.claim_revision)
+            Some(t1_claim.claim_revision),
         )
         .unwrap_err()
         .code,
         ErrorCode::OutOfScopeChanges
     );
+    let after_mixed_reject = pre_backend
+        .load_run_graph(&start_resp.run.run_id)
+        .unwrap()
+        .unwrap();
+    assert!(
+        after_mixed_reject
+            .nodes
+            .iter()
+            .find(|n| n.node_id == "task:t1")
+            .unwrap()
+            .extended_scope
+            .is_empty(),
+        "mixed protected + eligible edit must not mutate extended_scope"
+    );
+    match orig_cargo {
+        Some(content) => fs::write(task_wt.join("Cargo.toml"), content).unwrap(),
+        None => fs::remove_file(task_wt.join("Cargo.toml")).unwrap(),
+    }
 
-    fs::write(task_wt.join("README.md"), "# Test Repo\n").unwrap();
+    // With protected path removed, the eligible out-of-scope edit (`README.md`) auto-admits cleanly
+    // and persists `extended_scope` (`auto:lazy_scope`), surviving through review and delivery commit.
+    let lazy_verify = verify_node(
+        &engine,
+        &rid,
+        "t1.build",
+        "builder-1",
+        Some("t1_tests"),
+        Some(t1_claim.claim_revision),
+    )
+    .unwrap();
+    assert!(lazy_verify.passed);
+    let lazy_trace = pre_backend
+        .latest_trace(&start_resp.run.run_id, "task:t1:build", t1_claim.claim_revision)
+        .unwrap()
+        .expect("lazy verify recorded trace");
+    assert!(
+        lazy_trace
+            .command_line
+            .as_deref()
+            .is_some_and(|cmd| cmd.contains("--doc-scope")),
+        "auto-admitted README.md must flow into {{scope_target}}, got: {:?}",
+        lazy_trace.command_line
+    );
 
     let t1_c2 = claim_node(
         &engine,
@@ -415,6 +468,15 @@ gates:
         None,
     )
     .unwrap();
+    assert!(
+        t1_c2.contract["extended_scope"]
+            .as_array()
+            .is_some_and(|arr| arr.iter().any(|e| {
+                e["path"].as_str() == Some("README.md")
+                    && e["reason"].as_str() == Some("auto:lazy_scope")
+            })),
+        "expected README.md persisted in extended_scope after lazy verify"
+    );
     assert!(
         verify_node(
             &engine,
@@ -603,6 +665,15 @@ gates:
         "expected resolved findings cleared after passing build, got: {:?}",
         r2.unresolved_findings
     );
+    assert!(
+        r2.contract["extended_scope"]
+            .as_array()
+            .is_some_and(|arr| arr.iter().any(|e| {
+                e["path"].as_str() == Some("README.md")
+                    && e["reason"].as_str() == Some("auto:lazy_scope")
+            })),
+        "expected README.md auto:lazy_scope entry to survive into review contract"
+    );
     let rev_pass = submit_req(
         &engine,
         SubmitReq {
@@ -623,7 +694,15 @@ gates:
         },
     )
     .unwrap();
-    assert!(rev_pass.committed_oid.is_some());
+    let committed_oid = rev_pass.committed_oid.as_ref().unwrap();
+    let committed_files = git_ok(
+        &task_wt,
+        &["show", "--pretty=format:", "--name-only", committed_oid.as_str()],
+    );
+    assert!(
+        committed_files.lines().any(|line| line.trim() == "README.md"),
+        "expected lazy-scope edit README.md in delivery commit, got: {committed_files}"
+    );
 
     assert_eq!(
         claim_node(
@@ -956,19 +1035,76 @@ gates:
         (disk_prof.git.isolation, disk_prof.git.worktrees),
         (IsolationMode::Worktree, WorktreeLifecycle::Managed)
     );
-    assert!(claim_node(
+    let wt_t1_claim = claim_node(
         &p7_eng,
         wt_s.run.run_id.as_str(),
         "t1.build",
-        "w-wt",
+        "w-wt-1",
         None,
         false,
         false,
-        None
+        None,
     )
-    .unwrap()
-    .worktree
-    .contains(".worktrees/"));
+    .unwrap();
+    assert!(wt_t1_claim.worktree.contains(".worktrees/"));
+    let wt_t2_claim = claim_node(
+        &p7_eng,
+        wt_s.run.run_id.as_str(),
+        "t2.build",
+        "w-wt-2",
+        None,
+        false,
+        false,
+        None,
+    )
+    .unwrap();
+    let wt_t2_path = PathBuf::from(&wt_t2_claim.worktree);
+    assert_ne!(wt_t1_claim.worktree, wt_t2_claim.worktree);
+    // Cross-checkout `--worktree` override MUST be rejected on both `verify` and `submit`
+    // before any `auto:lazy_scope` admission or trace publication.
+    fs::write(wt_t2_path.join("src/follower.rs"), "pub fn follower() {}\n").unwrap();
+    let cross_verify_err = p7_eng
+        .execute(StateCommand::Verify(acdd_state::usecases::VerifyReq {
+            run: Some(wt_s.run.run_id.as_str().to_owned()),
+            node: "t1.build".to_owned(),
+            worker_id: Some("w-wt-1".parse().unwrap()),
+            claim_revision: Some(wt_t1_claim.claim_revision),
+            test_target: None,
+            worktree: Some(wt_t2_path.clone()),
+        }))
+        .unwrap_err();
+    assert_eq!(cross_verify_err.code, ErrorCode::ExternalGitDrift);
+    let p7_reader = reader_for(&p7_cfg);
+    let wt_snap = p7_reader.load_run_graph(&wt_s.run.run_id).unwrap().unwrap();
+    assert!(
+        wt_snap
+            .nodes
+            .iter()
+            .find(|n| n.node_id == "task:t1")
+            .unwrap()
+            .extended_scope
+            .is_empty(),
+        "cross-checkout verify override must not mutate t1 extended_scope"
+    );
+    assert!(
+        p7_reader
+            .latest_trace(&wt_s.run.run_id, "task:t1:build", wt_t1_claim.claim_revision)
+            .unwrap()
+            .is_none(),
+        "cross-checkout verify override must not publish a trace"
+    );
+    let mut cross_submit = pass_req(
+        wt_s.run.run_id.as_str(),
+        "t1.build",
+        "w-wt-1",
+        Some(wt_t1_claim.claim_revision),
+        false,
+    );
+    cross_submit.worktree = Some(wt_t2_path);
+    assert_eq!(
+        submit_req(&p7_eng, cross_submit).unwrap_err().code,
+        ErrorCode::ExternalGitDrift
+    );
     clear_run(&p7_eng, wt_s.run.run_id.as_str());
 
     let ip_s = start_run(
@@ -1419,6 +1555,62 @@ gates:
         ),
     )
     .unwrap();
+
+    // Auto-admitted edits under `ScopeMode::Lazy` (worktree isolation) are also enforced by `max_net_loc`.
+    let lazy_loc_p = write_profile(
+        loc_root,
+        "lazy_loc.yaml",
+        "version: 2\ninherit: code\ngit: { isolation: worktree, worktrees: managed }\ncommands:\n  test: { command: \"true\" }\n  build_check: { command: \"true\" }\n  verify_all: { command: \"true\" }\ngates:\n  - id: design\n    gates:\n      - id: synthesize\n        role: architect\n        proof: blueprint\n        pass: review\n      - id: review\n        role: independent_reviewer\n        proof: none\n        independent_from: [synthesize]\n  - tasks:\n      gates:\n        - id: build\n          role: builder\n          proof: command\n          command: test\n          pass: review\n        - id: review\n          role: independent_reviewer\n          proof: none\n          independent_from: [build]\n          need: [build]\n          receipt: true\n          fail: build\n",
+    );
+    let lazy_loc_start = start_run(
+        &loc_eng,
+        StartReq {
+            spec_path: Some("docs/milestones/AC-LOC.md".to_owned()),
+            workflow: Some(lazy_loc_p),
+            run_name: Some("lazy-loc".parse().unwrap()),
+            worktree: true,
+            ..StartReq::default()
+        },
+    )
+    .unwrap();
+    let lazy_loc_rid = lazy_loc_start.run.run_id.clone();
+    let lsyn_c = claim_node(&loc_eng, lazy_loc_rid.as_str(), "design.synthesize", "arch-2", None, false, false, None).unwrap();
+    let mut lsyn_pass = pass_req(lazy_loc_rid.as_str(), "design.synthesize", "arch-2", Some(lsyn_c.claim_revision), false);
+    lsyn_pass.custom_evidence = Some(json!({
+        "cited_invariants": ["INV-SINGLE-OWNER"],
+        "cited_symbols": ["base"],
+        "global_negative_boundaries": ["none"],
+        "blackboard_decision_id": "bb-2",
+        "tasks": {
+            "t1": {
+                "layer": "core",
+                "summary": "lazy max_net_loc",
+                "exported_interfaces": ["base"],
+                "negative_boundaries": ["no shadow helpers"],
+                "incoming_seams": [],
+                "outgoing_seams": [],
+                "canonical_owners": ["src/lib.rs::base"],
+                "mechanism_rules": ["count auto-admitted prod files"],
+                "max_net_loc": 2
+            }
+        }
+    }));
+    submit_req(&loc_eng, lsyn_pass).unwrap();
+    let lsyn_r = claim_node(&loc_eng, lazy_loc_rid.as_str(), "design.review", "rev-bp2", None, false, false, None).unwrap();
+    submit_req(&loc_eng, pass_req(lazy_loc_rid.as_str(), "design.review", "rev-bp2", Some(lsyn_r.claim_revision), false)).unwrap();
+    let lb = claim_node(&loc_eng, lazy_loc_rid.as_str(), "t1.build", "builder-lazy-loc", None, false, false, None).unwrap();
+    let lb_wt = PathBuf::from(&lb.worktree);
+    // Add an out-of-scope file (`src/auto_extra.rs`, +3 prod lines) -> auto-admitted by verify, then rejected by max_net_loc=2 on submit.
+    fs::write(lb_wt.join("src/auto_extra.rs"), "pub fn e1() {}\npub fn e2() {}\npub fn e3() {}\n").unwrap();
+    assert!(verify_node(&loc_eng, lazy_loc_rid.as_str(), "t1.build", "builder-lazy-loc", None, Some(lb.claim_revision)).unwrap().passed);
+    let lazy_over = submit_req(&loc_eng, pass_req(lazy_loc_rid.as_str(), "t1.build", "builder-lazy-loc", Some(lb.claim_revision), false)).unwrap_err();
+    assert_eq!(lazy_over.code, ErrorCode::GateVerificationFailed);
+    assert!(
+        lazy_over.message.contains("+3") && lazy_over.message.contains("max_net_loc=2"),
+        "expected auto-admitted edit to count toward max_net_loc=2, got: {}",
+        lazy_over.message
+    );
+    clear_run(&loc_eng, lazy_loc_rid.as_str());
 
     // Reject review back to build, exceed again (+4 via `src/é.rs`), verify explicit decision table vs denied/insufficient strings.
     let r_loc = claim_node(

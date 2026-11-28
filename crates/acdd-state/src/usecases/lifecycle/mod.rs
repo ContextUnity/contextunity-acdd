@@ -33,8 +33,9 @@ pub(crate) use specs::{
 pub(super) use workspace::snapshot_worktree_layout;
 pub use workspace::{
     acquire_repo_lock, build_path_policy, checkout_config, effective_modules_for_profile,
-    ensure_blackboard_enabled, ensure_state_enabled, primary_workspace_root, resolve_node_worktree,
-    resolve_repo_layout_optional, resolve_source_checkout, validate_profile_fail_closed,
+    ensure_blackboard_enabled, ensure_state_enabled, primary_workspace_root,
+    resolve_bound_node_worktree, resolve_node_worktree, resolve_repo_layout_optional,
+    resolve_source_checkout, validate_profile_fail_closed,
 };
 pub(crate) use workspace::{
     apply_effective_isolation, with_repo_lock_and_maintenance,

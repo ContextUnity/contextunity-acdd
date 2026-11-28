@@ -73,6 +73,11 @@ CREATE TABLE IF NOT EXISTS local_facts (
     facts_blob BLOB NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS statement_skeletons (
+    path TEXT PRIMARY KEY,
+    skeleton_blob BLOB NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS edge_occurrences (
     owner_id INTEGER NOT NULL REFERENCES path_dictionary(path_id),
     ordinal INTEGER NOT NULL,

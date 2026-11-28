@@ -52,6 +52,7 @@ type CandidateExtraction = (
     bool,
     Option<Vec<u8>>,
     Option<Vec<acdd_index::models::Edge>>,
+    Option<Vec<u8>>,
     String,
 );
 
@@ -89,11 +90,11 @@ pub(super) fn extract_candidate(
         file.bytes,
         adapter.limits.max_file_bytes,
     );
-    if let Some((mut facts, encoded, components)) =
+    if let Some((mut facts, encoded, components, skeleton_blob)) =
         extraction_cache.load_for_build(&key, cache_limit)
     {
         touch_cached_facts(&mut facts, file.mtime_ns);
-        return Ok((file, facts, true, encoded, components, key));
+        return Ok((file, facts, true, encoded, components, skeleton_blob, key));
     }
     let spec_paths = adapter.spec_paths();
     let zones = adapter.architecture.zone_names();
@@ -105,7 +106,7 @@ pub(super) fn extract_candidate(
         &spec_paths,
         Some(&zones),
     )?;
-    Ok((file, facts, false, None, None, key))
+    Ok((file, facts, false, None, None, None, key))
 }
 
 pub(super) fn run_cold_pipeline(
@@ -349,7 +350,7 @@ pub(super) fn extraction_worker(context: ExtractionWorkerContext) {
             &effective_ruleset_hash,
             &mut source,
         )
-        .and_then(|(file, mut facts, cache_hit, cached, components, key)| {
+        .and_then(|(file, mut facts, cache_hit, cached, components, cached_skeletons, key)| {
             assign_file_component(&file.path, &mut facts, None);
             let storage_rows = db_writer::prepare_catalog_storage_with_facts(&file, &facts)?;
             let cached = cached.filter(|_| {
@@ -384,12 +385,19 @@ pub(super) fn extraction_worker(context: ExtractionWorkerContext) {
                         )
                     })
             });
-            let encoded_facts = match cached {
-                Some(encoded) => encoded,
+            let (encoded_facts, skeleton_blob) = match cached {
+                Some(encoded) => (encoded, cached_skeletons),
                 None => {
                     let (encoded, length) = acdd_index::typed_facts::encode_facts_with_len(&facts)?;
-                    extraction_cache.store_encoded(&key, &encoded, length);
-                    encoded
+                    let skeletons =
+                        acdd_index::typed_facts::encode_statement_skeletons(&facts.facts);
+                    extraction_cache.store_encoded_with_skeletons(
+                        &key,
+                        &encoded,
+                        length,
+                        skeletons.as_deref(),
+                    );
+                    (encoded, skeletons)
                 }
             };
             let local_facts_leaf = db_writer::local_facts_leaf(&file, &encoded_facts)?;
@@ -399,6 +407,7 @@ pub(super) fn extraction_worker(context: ExtractionWorkerContext) {
                 file,
                 catalog,
                 encoded_facts,
+                skeleton_blob,
                 local_facts_leaf,
                 storage_rows,
                 cache_hit,
@@ -411,17 +420,24 @@ pub(super) fn extraction_worker(context: ExtractionWorkerContext) {
                 .min(u64::MAX as u128) as u64,
             Ordering::AcqRel,
         );
-        let (file, catalog, encoded_facts, local_facts_leaf, storage_rows, cache_hit) =
-            match extracted {
-                Ok(value) => value,
-                Err(error) => {
-                    let message = error.to_string();
-                    control.cancel(&message);
-                    let _ = result_tx.send(Err(message));
-                    drop(permit);
-                    continue;
-                }
-            };
+        let (
+            file,
+            catalog,
+            encoded_facts,
+            skeleton_blob,
+            local_facts_leaf,
+            storage_rows,
+            cache_hit,
+        ) = match extracted {
+            Ok(value) => value,
+            Err(error) => {
+                let message = error.to_string();
+                control.cancel(&message);
+                let _ = result_tx.send(Err(message));
+                drop(permit);
+                continue;
+            }
+        };
         if cache_hit {
             counters
                 .extraction_cache_hits
@@ -432,6 +448,7 @@ pub(super) fn extraction_worker(context: ExtractionWorkerContext) {
             file,
             catalog,
             encoded_facts,
+            skeleton_blob,
             local_facts_leaf,
             storage_rows,
             permit,

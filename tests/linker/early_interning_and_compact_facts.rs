@@ -9,7 +9,10 @@ use acdd_index::{
         compact_graph::{CompactGraph, CompactTag},
         Facts,
     },
-    typed_facts::{decode_facts, encode_facts, TypedFacts},
+    typed_facts::{
+        decode_facts, decode_statement_skeletons, encode_facts, encode_statement_skeletons,
+        TypedFacts,
+    },
 };
 use std::collections::BTreeMap;
 
@@ -125,7 +128,15 @@ fn interned_extraction_and_linker_preserve_exact_graph_parity() {
             ast::extract_typed_with_registry(path, language, source, &registry).unwrap();
         let encoded = encode_facts(&extracted).unwrap();
         assert!(encoded.starts_with(b"ACDD-LOCAL-FACTS\0\x06"));
-        let decoded = decode_facts(&encoded).unwrap();
+        let mut decoded = decode_facts(&encoded).unwrap();
+        if let Some(skel_blob) = encode_statement_skeletons(&extracted.facts) {
+            let skels = decode_statement_skeletons(&skel_blob).unwrap();
+            for (entry, (_, hashes)) in decoded.facts.statement_fingerprints.iter_mut().zip(skels.iter()) {
+                for (stmt, &h) in entry.statements.iter_mut().zip(hashes.iter()) {
+                    stmt.skeleton_hash = h;
+                }
+            }
+        }
         assert_eq!(
             serde_json::to_value(&extracted.facts).unwrap(),
             serde_json::to_value(&decoded.facts).unwrap(),
@@ -136,7 +147,15 @@ fn interned_extraction_and_linker_preserve_exact_graph_parity() {
         let mut raw = Vec::new();
         extracted.encode_with_string_table(&mut raw);
         let mut cursor = 0;
-        let roundtrip = TypedFacts::decode_with_string_table(&raw, &mut cursor).unwrap();
+        let mut roundtrip = TypedFacts::decode_with_string_table(&raw, &mut cursor).unwrap();
+        if let Some(skel_blob) = encode_statement_skeletons(&extracted.facts) {
+            let skels = decode_statement_skeletons(&skel_blob).unwrap();
+            for (entry, (_, hashes)) in roundtrip.facts.statement_fingerprints.iter_mut().zip(skels.iter()) {
+                for (stmt, &h) in entry.statements.iter_mut().zip(hashes.iter()) {
+                    stmt.skeleton_hash = h;
+                }
+            }
+        }
         assert_eq!(cursor, raw.len());
         assert_eq!(
             serde_json::to_value(&roundtrip.facts).unwrap(),

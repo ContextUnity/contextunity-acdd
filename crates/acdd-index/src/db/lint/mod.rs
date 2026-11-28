@@ -23,7 +23,9 @@ pub(crate) use dead_tails::{collect_dead_tails, DeadTailsNode};
 pub(crate) use docs_lint::document_diagnostics_paged;
 pub(crate) use duplicates::{
     collect_file_duplicates, collect_symbol_duplicates, format_duplicate_suggestion,
+    DuplicateScanRequest,
 };
+pub use duplicates::LintDiffContext;
 pub use rules::enforced_invariant_ids;
 pub use syntax::syntax_paged;
 use types::{LintIndexData, LintScope, LintViolation};
@@ -42,6 +44,15 @@ pub struct LintRequest<'a> {
 
 /// Executes the unified language-agnostic lint engine across requested categories.
 pub fn run_lint(conn: &Connection, request: &LintRequest<'_>) -> Result<Value> {
+    run_lint_with_diff(conn, request, None)
+}
+
+/// Executes the unified lint engine with explicit candidate diff provenance.
+pub fn run_lint_with_diff(
+    conn: &Connection,
+    request: &LintRequest<'_>,
+    diff: Option<&LintDiffContext<'_>>,
+) -> Result<Value> {
     let generation = paging::generation(conn, request.page)?;
     let scope = LintScope::from_request(conn, request.target, request.paths)?;
     let categories = resolve_categories(request.categories);
@@ -120,8 +131,15 @@ pub fn run_lint(conn: &Connection, request: &LintRequest<'_>) -> Result<Value> {
             &mut violations,
         )?;
     }
+    let mut diff_reuse_hints: Vec<String> = Vec::new();
     if categories.contains(&LintCategory::Duplicates) {
-        duplicates::collect_duplicate_violations(conn, &index.scope, &mut violations)?;
+        diff_reuse_hints = duplicates::collect_duplicate_violations(
+            conn,
+            &index.scope,
+            diff,
+            request.workspace_root,
+            &mut violations,
+        )?;
     }
     if categories.contains(&LintCategory::DeadTails) {
         dead_tails::collect_dead_tails_violations(
@@ -177,7 +195,7 @@ pub fn run_lint(conn: &Connection, request: &LintRequest<'_>) -> Result<Value> {
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let page = paging::value(paged_items, total, request.page, &generation);
 
-    Ok(json!({
+    let mut response = json!({
         "mode": "lint",
         "target": request.target.unwrap_or(""),
         "categories": categories.iter().map(|c| c.as_str()).collect::<Vec<_>>(),
@@ -196,7 +214,11 @@ pub fn run_lint(conn: &Connection, request: &LintRequest<'_>) -> Result<Value> {
         "has_more": page["has_more"],
         "next_offset": page["next_offset"],
         "generation": page["generation"],
-    }))
+    });
+    if !diff_reuse_hints.is_empty() {
+        response["diff_reuse_hints"] = json!(diff_reuse_hints);
+    }
+    Ok(response)
 }
 
 fn resolve_categories(requested: Option<&[LintCategory]>) -> Vec<LintCategory> {

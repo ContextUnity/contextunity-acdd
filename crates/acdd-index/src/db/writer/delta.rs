@@ -121,6 +121,7 @@ fn delete_file(
         ("source_inventory", "path"),
         ("files", "path"),
         ("local_facts", "path"),
+        ("statement_skeletons", "path"),
         ("shared_owners", "owner_id"),
         ("errors", "path"),
         ("doc_sections", "path"),

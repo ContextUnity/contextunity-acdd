@@ -135,36 +135,8 @@ scope: [src/lib.rs]
         panic!("expected ClaimResp");
     };
     let task_wt = PathBuf::from(&c_build.worktree);
-    fs::write(task_wt.join("README.md"), "# out of scope\n").unwrap();
-    let oos_err = engine
-        .execute(StateCommand::Verify(VerifyReq {
-            run: Some(rid.clone()),
-            node: "t1.build".to_owned(),
-            worker_id: Some(w_build.clone()),
-            test_target: None,
-            claim_revision: Some(c_build.claim_revision),
-            worktree: None,
-        }))
-        .unwrap_err();
-    assert_eq!(oos_err.code, ErrorCode::OutOfScopeChanges);
-    fs::write(task_wt.join("README.md"), "# ACDD Fixture Repo\n").unwrap();
-
     // Verify, then drift in-scope file -> immutable gate returns TaskCandidateMismatch.
-    let StateCommandOutput::Claim(c_build2) = engine
-        .execute(StateCommand::Claim(ClaimReq {
-            run: Some(rid.clone()),
-            node: Some("t1.build".to_owned()),
-            worker_id: w_build.clone(),
-            session_fingerprint: None,
-            force: false,
-            steal_remote: false,
-            worktree: None,
-            detail: Default::default(),
-        }))
-        .unwrap()
-    else {
-        panic!("expected ClaimResp");
-    };
+    let c_build2 = c_build;
     engine
         .execute(StateCommand::Verify(VerifyReq {
             run: Some(rid.clone()),

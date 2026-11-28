@@ -887,6 +887,9 @@ pub struct DocSection {
 pub struct StatementFingerprint {
     /// Deterministic 64-bit hash of the normalized AST token sequence (excluding comments/trivia).
     pub hash: u64,
+    /// Deterministic 64-bit hash of the literal-masked (`$str`/`$num`) AST token sequence.
+    #[serde(default)]
+    pub skeleton_hash: u64,
     /// One-based starting source line of the statement.
     pub line: usize,
     /// One-based ending source line of the statement.

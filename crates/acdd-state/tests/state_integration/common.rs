@@ -77,6 +77,7 @@ impl DomainProvider for StubDomainProvider {
     ) -> anyhow::Result<DomainCheckOutcome> {
         Ok(DomainCheckOutcome::Passed {
             summary: "ok".to_owned(),
+            diagnostics: Vec::new(),
             execution_digest_salt: None,
         })
     }
@@ -154,6 +155,7 @@ impl MockHttpProvider {
         let salt = (!self.unsalted_check.load(Ordering::SeqCst)).then(|| "http-salt-v1".to_owned());
         DomainCheckOutcome::Passed {
             summary: "headers valid".to_owned(),
+            diagnostics: Vec::new(),
             execution_digest_salt: salt,
         }
     }

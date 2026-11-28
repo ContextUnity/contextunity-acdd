@@ -1,15 +1,250 @@
 //! Pure `extend_scope` planning, `is_agent_writable` / `protected_paths` validation,
 //! and `TASK_SCOPE_CONFLICT` checks against already-claimed unfinished tasks.
 
-use crate::machine::graph::{build_preconditions, find_node};
+use crate::machine::graph::{build_preconditions, container_scope, find_node};
 use crate::machine::inputs::{ExtendScopeInput, MachineProfileInput};
 use crate::machine::schedule::check_task_scope_overlap;
 use crate::types::{
-    NodeKind, NodeStatus, NodeStatusPatch, RunGraphSnapshot, TransitionPlan, ValidatedObservations,
+    GateNodeRecord, IsolationMode, NodeKind, NodeStatus, NodeStatusPatch, RunGraphSnapshot,
+    TransitionPlan, ValidatedObservations,
 };
-use acdd_core::errors::{ErrorCode, AcddError};
+use acdd_core::errors::{AcddError, ErrorCode};
 use acdd_core::path_policy::{is_valid_scope_glob, normalize_rel_path};
 use acdd_spec::ExtendedScopeEntry;
+
+/// Scope enforcement mode for a gate or task node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScopeMode {
+    /// Protected-paths-only write barrier; non-protected changed paths auto-admit into `extended_scope`.
+    Lazy,
+    /// Strict admitted-scope enforcement (`scope ∪ extended_scope`).
+    Strict,
+}
+
+/// Resolve the canonical task container for `node` (`Task` itself or parent of `TaskGate`).
+fn resolve_task_container<'a>(
+    snapshot: &'a RunGraphSnapshot,
+    node: &'a GateNodeRecord,
+) -> Option<&'a GateNodeRecord> {
+    match node.kind {
+        NodeKind::Task => Some(node),
+        NodeKind::TaskGate => node
+            .parent_id
+            .as_deref()
+            .and_then(|pid| find_node(snapshot, pid).ok()),
+        _ => None,
+    }
+}
+
+/// Resolve the concrete bound canonical worktree string for a task container from `snapshot`.
+///
+/// Prefers `task_node.worktree`, then any child gate's `worktree`, then any active claim's
+/// `worktree` for the task or its child gates. Returns `None` when unresolved or blank.
+pub(crate) fn task_bound_worktree<'a>(
+    snapshot: &'a RunGraphSnapshot,
+    task_node: &'a GateNodeRecord,
+) -> Option<&'a str> {
+    let non_empty = |s: &'a str| {
+        let trimmed = s.trim();
+        (!trimmed.is_empty()).then_some(trimmed)
+    };
+    if let Some(wt) = task_node.worktree.as_deref().and_then(non_empty) {
+        return Some(wt);
+    }
+    if let Some(wt) = snapshot
+        .nodes
+        .iter()
+        .filter(|n| n.parent_id.as_deref() == Some(task_node.node_id.as_str()))
+        .find_map(|n| n.worktree.as_deref().and_then(non_empty))
+    {
+        return Some(wt);
+    }
+    snapshot
+        .claims
+        .iter()
+        .filter(|c| {
+            c.outcome == crate::types::ClaimOutcome::Active
+                && (c.node_id == task_node.node_id
+                    || snapshot.nodes.iter().any(|n| {
+                        n.node_id == c.node_id
+                            && n.parent_id.as_deref() == Some(task_node.node_id.as_str())
+                    }))
+        })
+        .find_map(|c| non_empty(&c.worktree))
+}
+
+/// Return `true` iff both tasks are `Worktree`-isolated and resolve to concrete, distinct
+/// canonical worktree paths.
+pub(crate) fn tasks_have_distinct_worktrees(
+    snapshot: &RunGraphSnapshot,
+    task_a: &GateNodeRecord,
+    task_a_worktree_override: Option<&str>,
+    task_b: &GateNodeRecord,
+) -> bool {
+    if snapshot.run.isolation != IsolationMode::Worktree
+        || task_a.isolation != IsolationMode::Worktree
+        || task_b.isolation != IsolationMode::Worktree
+    {
+        return false;
+    }
+    let wt_a = task_a_worktree_override
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or_else(|| task_bound_worktree(snapshot, task_a));
+    let wt_b = task_bound_worktree(snapshot, task_b);
+    match (wt_a, wt_b) {
+        (Some(a), Some(b)) => a != b,
+        _ => false,
+    }
+}
+
+/// Canonical scope-mode resolver shared by `verify`, `schedule`, `commit`, and `budget`.
+///
+/// Worktree-isolated task builds/gates use [`ScopeMode::Lazy`] so `protected_paths` and
+/// `WorkspacePathPolicy::is_candidate_included` are the sole hard write barriers, while
+/// `IsolationMode::InPlace` runs, narrow root gates (`polish`, `memory_synthesis`,
+/// `documentation`), and tasks sharing a canonical worktree with another claimed unfinished
+/// task stay strictly scoped (`ScopeMode::Strict`).
+pub fn effective_scope_mode(snapshot: &RunGraphSnapshot, node: &GateNodeRecord) -> ScopeMode {
+    let is_lazy_task_node = node.kind == NodeKind::Task
+        || (node.kind == NodeKind::TaskGate && node.node_id.ends_with(":build"));
+    if snapshot.run.isolation != IsolationMode::Worktree
+        || node.isolation != IsolationMode::Worktree
+        || !is_lazy_task_node
+    {
+        return ScopeMode::Strict;
+    }
+    let Some(task_node) = resolve_task_container(snapshot, node) else {
+        return ScopeMode::Strict;
+    };
+    if let Some(my_wt) = task_bound_worktree(snapshot, task_node) {
+        let shares_worktree = snapshot.nodes.iter().any(|other| {
+            other.kind == NodeKind::Task
+                && other.node_id != task_node.node_id
+                && crate::machine::schedule::is_task_claimed_unfinished(snapshot, other)
+                && task_bound_worktree(snapshot, other) == Some(my_wt)
+        });
+        if shares_worktree {
+            return ScopeMode::Strict;
+        }
+    }
+    ScopeMode::Lazy
+}
+
+/// Shared transition-plan builder for both automatic (`ScopeMode::Lazy`) and manual `extend_scope`.
+fn build_extended_scope_plan(
+    snapshot: &RunGraphSnapshot,
+    task_node: &GateNodeRecord,
+    primary: &GateNodeRecord,
+    new_extended: Vec<ExtendedScopeEntry>,
+    next_contract_rev: Option<u32>,
+    significant: bool,
+) -> TransitionPlan {
+    let mut watch_ids = vec![primary.node_id.as_str()];
+    if task_node.node_id != primary.node_id {
+        watch_ids.push(task_node.node_id.as_str());
+    }
+    let mut node_patches = Vec::new();
+    let mut task_patch = NodeStatusPatch::status_only(&task_node.node_id, task_node.status);
+    task_patch.contract_revision = next_contract_rev;
+    task_patch.extended_scope = Some(new_extended.clone());
+    node_patches.push(task_patch);
+
+    for child in &snapshot.nodes {
+        if child.parent_id.as_deref() == Some(task_node.node_id.as_str()) {
+            if child.node_id != primary.node_id {
+                watch_ids.push(child.node_id.as_str());
+            }
+            let mut child_patch = NodeStatusPatch::status_only(&child.node_id, child.status);
+            child_patch.contract_revision = next_contract_rev;
+            child_patch.extended_scope = Some(new_extended.clone());
+            node_patches.push(child_patch);
+        }
+    }
+
+    let preconditions = build_preconditions(snapshot, &watch_ids, Some(primary));
+    TransitionPlan {
+        preconditions,
+        bump_run_generation: significant,
+        new_run_status: None,
+        new_root_cycle_count: None,
+        completed_at: None,
+        node_patches,
+        dependency_patches: Vec::new(),
+        claim_patches: Vec::new(),
+        new_artifacts: Vec::new(),
+        new_blackboard: Vec::new(),
+        blackboard_patches: Vec::new(),
+        new_subtasks: Vec::new(),
+        significant_transition: significant,
+    }
+}
+
+/// Reason tag recorded on `extended_scope` entries auto-admitted under [`ScopeMode::Lazy`].
+const AUTO_LAZY_SCOPE_REASON: &str = "auto:lazy_scope";
+
+/// Plan a pure `extended_scope` auto-admission for non-protected `changed_paths` under
+/// [`ScopeMode::Lazy`] without bumping `contract_revision` or invalidating the active claim.
+pub(crate) fn plan_auto_admit_lazy_scope(
+    snapshot: &RunGraphSnapshot,
+    profile: &MachineProfileInput,
+    obs: &ValidatedObservations,
+    node: &GateNodeRecord,
+    changed_paths: &[String],
+) -> Result<Option<TransitionPlan>, AcddError> {
+    if effective_scope_mode(snapshot, node) != ScopeMode::Lazy || changed_paths.is_empty() {
+        return Ok(None);
+    }
+    let task_node = match node.kind {
+        NodeKind::Task => node,
+        NodeKind::TaskGate => {
+            let parent_id = node.parent_id.as_deref().ok_or_else(|| {
+                AcddError::new(
+                    ErrorCode::WorkflowSchemaInvalid,
+                    format!("task_gate '{}' has no parent task container", node.node_id),
+                )
+            })?;
+            find_node(snapshot, parent_id)?
+        }
+        _ => return Ok(None),
+    };
+    let policy = crate::machine::verify::effective_path_policy(snapshot, obs);
+    let admitted_scope = container_scope(snapshot, node);
+    let mut new_extended = task_node.extended_scope.clone();
+    let mut added = false;
+    for raw_path in changed_paths {
+        let Some(norm) = normalize_rel_path(raw_path) else {
+            continue;
+        };
+        if !policy.is_candidate_included(&norm)
+            || policy.is_protected_path(&norm, &profile.protected_paths)
+            || policy.is_scope_admitted(&norm, &admitted_scope)
+        {
+            continue;
+        }
+        if !new_extended.iter().any(|e| e.path == norm)
+            && !task_node.scope.iter().any(|s| s == &norm)
+        {
+            new_extended.push(ExtendedScopeEntry {
+                path: norm,
+                reason: AUTO_LAZY_SCOPE_REASON.to_owned(),
+            });
+            added = true;
+        }
+    }
+    if !added {
+        return Ok(None);
+    }
+
+    Ok(Some(build_extended_scope_plan(
+        snapshot,
+        task_node,
+        node,
+        new_extended,
+        None,
+        false,
+    )))
+}
 
 /// Plan a pure `extend_scope` update honoring shell `ValidatedObservations` (e.g. custom DB path policy).
 pub(crate) fn plan_extend_scope_with_obs(
@@ -121,6 +356,7 @@ pub(crate) fn plan_extend_scope_with_obs(
         check_task_scope_overlap(
             snapshot,
             &task_node.node_id,
+            None,
             std::slice::from_ref(&norm),
             &format!("extend_scope path '{norm}' conflicts with"),
         )?;
@@ -146,44 +382,12 @@ pub(crate) fn plan_extend_scope_with_obs(
     } else {
         task_node
     };
-    let mut watch_ids = vec![primary.node_id.as_str()];
-    if task_node.node_id != primary.node_id {
-        watch_ids.push(task_node.node_id.as_str());
-    }
-    let mut node_patches = Vec::new();
-
-    let mut task_patch = NodeStatusPatch::status_only(&task_node.node_id, task_node.status);
-    task_patch.contract_revision = Some(next_contract_rev);
-    task_patch.extended_scope = Some(new_extended.clone());
-    node_patches.push(task_patch);
-
-    for child in &snapshot.nodes {
-        if child.parent_id.as_deref() == Some(task_node.node_id.as_str()) {
-            if child.node_id != primary.node_id {
-                watch_ids.push(child.node_id.as_str());
-            }
-            let mut child_patch = NodeStatusPatch::status_only(&child.node_id, child.status);
-            child_patch.contract_revision = Some(next_contract_rev);
-            child_patch.extended_scope = Some(new_extended.clone());
-            node_patches.push(child_patch);
-        }
-    }
-
-    let preconditions = build_preconditions(snapshot, &watch_ids, Some(primary));
-
-    Ok(TransitionPlan {
-        preconditions,
-        bump_run_generation: true,
-        new_run_status: None,
-        new_root_cycle_count: None,
-        completed_at: None,
-        node_patches,
-        dependency_patches: Vec::new(),
-        claim_patches: Vec::new(),
-        new_artifacts: Vec::new(),
-        new_blackboard: Vec::new(),
-        blackboard_patches: Vec::new(),
-        new_subtasks: Vec::new(),
-        significant_transition: true,
-    })
+    Ok(build_extended_scope_plan(
+        snapshot,
+        task_node,
+        primary,
+        new_extended,
+        Some(next_contract_rev),
+        true,
+    ))
 }

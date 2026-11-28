@@ -16,7 +16,7 @@ use acdd_core::path_policy::WorkspacePathPolicy;
 use acdd_core::ports::DomainContextReq;
 use acdd_core::response::{QueryOptions, ResponsePolicy};
 use acdd_index::ast::extract_typed;
-use acdd_index::db::symbols;
+use acdd_index::db::symbols::{self, SearchSignatureHit};
 use acdd_index::languages;
 use acdd_index::models::tags::NodeKind;
 use acdd_index::models::{Facts, Node};
@@ -128,6 +128,33 @@ fn external_caller_target_nodes(facts: &Facts, lang_id: &str) -> Vec<Node> {
         );
     }
     nodes
+}
+
+fn build_orientation_query(req: &DomainContextReq) -> String {
+    let mut tokens: Vec<&str> = Vec::new();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let sources = req
+        .citation_text
+        .as_deref()
+        .into_iter()
+        .chain(req.target.as_deref());
+    for text in sources {
+        for raw in text.split(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
+            if raw.len() < 4 || raw.len() > 64 {
+                continue;
+            }
+            if raw.chars().all(|c| c.is_ascii_digit()) {
+                continue;
+            }
+            if seen.insert(raw) {
+                tokens.push(raw);
+                if tokens.len() >= 16 {
+                    return tokens.join(" ");
+                }
+            }
+        }
+    }
+    tokens.join(" ")
 }
 
 impl CodeDomainProvider {
@@ -244,10 +271,64 @@ impl CodeDomainProvider {
                 all_candidates.push((not_target, rank_in_file, not_exported, file_idx, val));
             }
         }
+        let mut seen_qualnames: BTreeSet<String> = BTreeSet::new();
+        for (_, _, _, _, val) in &all_candidates {
+            if let Some(qn) = val.get("qualname").and_then(Value::as_str) {
+                seen_qualnames.insert(qn.to_owned());
+            }
+        }
+        let orientation_query = build_orientation_query(req);
+        let mut rrf_items: Vec<(u64, Value)> = Vec::new();
+        if !orientation_query.is_empty() {
+            if let Some(conn) =
+                open_code_db_readonly(&self.root, &req.worktree, self.code_db.as_deref())
+            {
+                let page = QueryOptions::resolve(
+                    &ResponsePolicy::default(),
+                    Some(12),
+                    0,
+                    Some(acdd_core::response::Detail::Compact),
+                    None,
+                )?;
+                let search_opts = symbols::SearchOptions {
+                    kind: None,
+                    classification: Some(acdd_core::response::SymbolClassification::Production),
+                    path: None,
+                    include_docs: false,
+                    exact: false,
+                    page: &page,
+                };
+                let hits: Vec<SearchSignatureHit> = symbols::search_signature_hits(
+                    &conn,
+                    &orientation_query,
+                    &search_opts,
+                    CODE_SYMBOLS_MAX_SIG_CHARS,
+                )
+                .unwrap_or_default();
+                for (idx, hit) in hits.into_iter().enumerate() {
+                    if !seen_qualnames.insert(hit.qualname.clone()) {
+                        continue;
+                    }
+                    let score = 4_000u64.saturating_sub(idx as u64);
+                    rrf_items.push((
+                        score,
+                        json!({
+                            "qualname": hit.qualname,
+                            "path": hit.path,
+                            "line": hit.line,
+                            "end_line": hit.end_line,
+                            "signature": truncate_single_line(&hit.signature, CODE_SYMBOLS_MAX_SIG_CHARS),
+                            "discovery": "repo_rrf",
+                        }),
+                    ));
+                }
+            }
+        }
+
         all_candidates.sort_by_key(|a| (a.0, a.1, a.2, a.3));
         all_candidates.truncate(CODE_SYMBOLS_MAX_ITEMS);
         let total = all_candidates.len();
-        let items: Vec<(u64, Value)> = all_candidates
+        let mut items: Vec<(u64, Value)> = all_candidates
             .into_iter()
             .enumerate()
             .map(|(idx, (not_target, _, not_exported, _, val))| {
@@ -257,6 +338,9 @@ impl CodeDomainProvider {
                 (score, val)
             })
             .collect();
+        items.extend(rrf_items);
+        items.sort_by_key(|a| std::cmp::Reverse(a.0));
+        items.truncate(CODE_SYMBOLS_MAX_ITEMS);
         Ok(budget_scored_items("symbols", items, req.max_bytes))
     }
 

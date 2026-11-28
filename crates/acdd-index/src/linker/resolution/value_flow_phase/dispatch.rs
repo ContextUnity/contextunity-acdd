@@ -62,7 +62,8 @@ pub(super) fn resolve_reference<'a, 'file, 'res>(
     };
 
     let expression = if r.expression.contains("::") {
-        Cow::Owned(r.expression.replace("::", "."))
+        let normalized = r.expression.replace("::", ".");
+        Cow::Owned(normalized.trim_start_matches('.').to_owned())
     } else if ctx
         .profile
         .is_some_and(|profile| profile.linker().script_receiver_syntax())
@@ -206,6 +207,14 @@ pub(super) fn resolve_reference<'a, 'file, 'res>(
         candidates,
         lookup_key,
     );
+    if r.expression.starts_with("::")
+        && ctx
+            .input
+            .semantic_context
+            .is_root_shadowed(ctx.path, first)
+    {
+        state.shadowed = true;
+    }
 
     if check_implicit_receiver_external(ctx, graph, &query, implicit_receiver, &state, candidates) {
         return;

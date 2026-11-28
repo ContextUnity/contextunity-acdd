@@ -31,6 +31,7 @@ pub(super) fn consume_pipeline_results(
     let mut statement =
         transaction.prepare_cached("INSERT INTO source_inventory VALUES(?1,'indexed',?2,?3)")?;
     let mut local_facts_writer = db_writer::LocalFactsBatchWriter::new(&transaction)?;
+    let mut skeletons_writer = db_writer::StatementSkeletonsBatchWriter::new(&transaction)?;
     let mut entries = Vec::new();
     let mut catalog = SymbolCatalog::default();
     let mut staged_payloads = BTreeMap::new();
@@ -58,12 +59,16 @@ pub(super) fn consume_pipeline_results(
             file,
             catalog: file_catalog,
             encoded_facts,
+            skeleton_blob,
             local_facts_leaf,
             storage_rows,
             permit,
         } = item;
         let path = file.path.clone();
         local_facts_writer.push(&file, encoded_facts)?;
+        if let Some(skeleton_blob) = skeleton_blob {
+            skeletons_writer.push(&path, skeleton_blob)?;
+        }
         let storage_rows_ref = payload_store.stage_prepared(storage_rows)?;
         entries.push(file);
         catalog.extend(file_catalog);
@@ -82,6 +87,7 @@ pub(super) fn consume_pipeline_results(
         drop(permit);
     }
     if let Some(failure) = control.failure() {
+        drop(skeletons_writer);
         drop(local_facts_writer);
         drop(statement);
         transaction.rollback()?;
@@ -89,6 +95,8 @@ pub(super) fn consume_pipeline_results(
     }
     local_facts_writer.flush()?;
     drop(local_facts_writer);
+    skeletons_writer.flush()?;
+    drop(skeletons_writer);
     payload_store.flush()?;
     entries.sort_unstable_by(|a, b| a.path.cmp(&b.path));
     for file in &entries {

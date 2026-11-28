@@ -28,7 +28,7 @@ fn invalid_cache_magic_and_collection_lengths_are_misses() {
     let key = "ab".repeat(32);
     assert!(cache.store(&key, &TypedFacts::default()));
     assert!(cache.load_with_encoded(&key, 4096).unwrap().1.is_none());
-    assert!(cache.store_encoded(&key, &encoded, raw_len));
+    assert!(cache.store_encoded_with_skeletons(&key, &encoded, raw_len, None));
     assert_eq!(
         cache.load_with_encoded(&key, 4096).unwrap().1,
         Some(encoded.clone())
@@ -47,11 +47,57 @@ fn invalid_cache_magic_and_collection_lengths_are_misses() {
     let length = zstd::zstd_safe::get_frame_content_size(&component_blob[LOCAL_MAGIC.len()..])
         .unwrap()
         .unwrap();
-    assert!(cache.store_encoded(&key, &component_blob, length));
-    let (clean, cached, components) = cache.load_for_build(&key, 4096).unwrap();
+    assert!(cache.store_encoded_with_skeletons(&key, &component_blob, length, None));
+    let (clean, cached, components, cached_skeletons) = cache.load_for_build(&key, 4096).unwrap();
     assert!(clean.edges.is_empty());
     assert_eq!(cached, Some(component_blob));
     assert_eq!(components.unwrap()[0].dst, "module:src/main.py");
+    assert!(cached_skeletons.is_none());
+
+    let mut with_fp = TypedFacts::default();
+    with_fp.facts.nodes.push(Node {
+        id: "fn:cached".into(),
+        kind: crate::models::tags::NodeKind::Function,
+        name: "cached".into(),
+        qualname: "cached".into(),
+        path: "src/main.rs".into(),
+        line: 1,
+        end_line: 3,
+        is_test: false,
+        language: crate::models::tags::LanguageId::Rust,
+        generated: false,
+        details: Default::default(),
+        native_semantic: None,
+    });
+    with_fp
+        .facts
+        .statement_fingerprints
+        .push(crate::models::CallableFingerprints {
+            node_id: "fn:cached".into(),
+            statements: vec![crate::models::StatementFingerprint {
+                hash: 11,
+                skeleton_hash: 0x1234_5678_9abc_def0,
+                line: 1,
+                end_line: 1,
+                token_count: 3,
+            }],
+        });
+    let (fp_encoded, fp_raw_len) = crate::typed_facts::encode_facts_with_len(&with_fp).unwrap();
+    assert!(crate::typed_facts::encode_statement_skeletons(&crate::models::Facts::default()).is_none());
+    assert!(crate::typed_facts::decode_statement_skeletons(b"bad-magic").is_none());
+    let fp_skel = crate::typed_facts::encode_statement_skeletons(&with_fp.facts).unwrap();
+    assert_eq!(
+        crate::typed_facts::decode_statement_skeletons(&fp_skel),
+        Some(vec![("fn:cached".to_owned(), vec![0x1234_5678_9abc_def0])])
+    );
+    assert!(cache.store_encoded_with_skeletons(&key, &fp_encoded, fp_raw_len, Some(&fp_skel)));
+    let (loaded_fp, loaded_encoded, _, loaded_skel) = cache.load_for_build(&key, 4096).unwrap();
+    assert_eq!(loaded_encoded.as_deref(), Some(fp_encoded.as_slice()));
+    assert_eq!(loaded_skel.as_deref(), Some(fp_skel.as_slice()));
+    assert_eq!(
+        loaded_fp.facts.statement_fingerprints[0].statements[0].skeleton_hash,
+        0x1234_5678_9abc_def0
+    );
     for (blob, length, limit, expected) in [
         (encoded.clone(), raw_len, 4096, true),
         (encoded.clone(), 4097, 4096, false),

@@ -110,7 +110,9 @@ fn claim_holding_repo_lock(
             node_cursor: cursor.clone(),
             worker_id: req.worker_id.clone(),
             session_fingerprint: session_fp.clone(),
-            worktree: planned_wt.to_string_lossy().into_owned(),
+            worktree: canonicalize_macos_var(&planned_wt)
+                .to_string_lossy()
+                .into_owned(),
             branch: planned_branch.clone(),
             baseline_commit: None,
             claim_tree: TreeOid::new("0".repeat(40))?,
@@ -132,12 +134,12 @@ fn claim_holding_repo_lock(
     {
         let created = create_task_worktree(wt_req)?;
         (
-            created.worktree.clone(),
+            canonicalize_macos_var(&created.worktree),
             Some(created.branch.clone()),
             Some((created.worktree, created.branch)),
         )
     } else {
-        (planned_wt, planned_branch, None)
+        (canonicalize_macos_var(&planned_wt), planned_branch, None)
     };
 
     let result = (|| -> Result<crate::context::ClaimResp, AcddError> {

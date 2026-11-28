@@ -76,6 +76,7 @@ fn passed_seam_hop(
             depth + 1,
             final_trace.join(" -> ")
         ),
+        diagnostics: Vec::new(),
         execution_digest_salt: Some(salt.to_owned()),
     }
 }
@@ -202,6 +203,7 @@ impl CodeDomainProvider {
         if !state.has_code_scope {
             return Ok(DomainCheckOutcome::Passed {
                 summary: "code.seam: no code language targets in admitted_scope".to_owned(),
+                diagnostics: Vec::new(),
                 execution_digest_salt: Some(salt),
             });
         }
@@ -235,6 +237,7 @@ impl CodeDomainProvider {
             if has_deleted_scoped_code {
                 return Ok(DomainCheckOutcome::Passed {
                     summary: "code.seam: all scoped code files deleted on disk".to_owned(),
+                    diagnostics: Vec::new(),
                     execution_digest_salt: Some(salt),
                 });
             }
@@ -307,6 +310,7 @@ impl CodeDomainProvider {
             return Ok(DomainCheckOutcome::Passed {
                 summary: "code.seam: docs-tagged task with no Rust production code in scope"
                     .to_owned(),
+                diagnostics: Vec::new(),
                 execution_digest_salt: Some(salt),
             });
         }
@@ -340,6 +344,7 @@ impl CodeDomainProvider {
                     summary:
                         "code.seam: pure test/type/const scope covered by matching test target"
                             .to_owned(),
+                    diagnostics: Vec::new(),
                     execution_digest_salt: Some(salt),
                 });
             }

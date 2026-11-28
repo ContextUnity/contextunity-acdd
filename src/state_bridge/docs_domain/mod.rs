@@ -117,6 +117,7 @@ impl DocsDomainProvider {
             LinksScope::NoDocsInScope => {
                 return Ok(DomainCheckOutcome::Passed {
                     summary: "docs.links: no markdown files in admitted_scope".to_owned(),
+                    diagnostics: Vec::new(),
                     execution_digest_salt: Some(format!("docs_live={live_digest}")),
                 });
             }
@@ -132,6 +133,7 @@ impl DocsDomainProvider {
         if errors.is_empty() {
             Ok(DomainCheckOutcome::Passed {
                 summary: format!("docs.links verified {checked_count} markdown file(s)"),
+                diagnostics: Vec::new(),
                 execution_digest_salt: Some(format!("docs_live={live_digest}")),
             })
         } else {
@@ -203,6 +205,7 @@ impl DocsDomainProvider {
         }
         Ok(DomainCheckOutcome::Passed {
             summary: format!("docs.specs validated {} document(s)", scanned.len()),
+            diagnostics: Vec::new(),
             execution_digest_salt: Some(format!("specs_live={live_digest}")),
         })
     }
