@@ -1,11 +1,11 @@
 use acdd_core::errors::ErrorCode;
 use acdd_core::ids::{GateId, NodeCursor, RunId, TaskRef, WorkerId};
+use acdd_state::runner::*;
+use acdd_state::types::ClaimOutcome;
 use acdd_state::workflow::{
     schema::{DetailedCommandDef, PatternCommandEntry, TestFilterConfig},
     CommandDef, ResourceLimits, RoleDef, RoleExecutionMode,
 };
-use acdd_state::runner::*;
-use acdd_state::types::ClaimOutcome;
 use std::collections::BTreeMap;
 use std::fs;
 use tempfile::TempDir;
@@ -148,6 +148,7 @@ fn command_escaping_and_line_bounds_matrix() {
             timeout_seconds: None,
             test_filter: None,
             scope_args_by_pattern: BTreeMap::new(),
+            post_always: false,
         },
         PatternCommandEntry {
             pattern: "crates/acdd-state/**".to_owned(),
@@ -159,6 +160,7 @@ fn command_escaping_and_line_bounds_matrix() {
                 "crates/acdd-state/**".to_owned(),
                 "-p acdd-state".to_owned(),
             )]),
+            post_always: false,
         },
     ]);
     let pat_req = CommandExecReq {

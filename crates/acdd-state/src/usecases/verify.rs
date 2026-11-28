@@ -8,8 +8,7 @@ use crate::machine::{
     compute_execution_digest, container_scope, evaluate_verify, ActionExecutionOutcome,
     ExecutionDigestInput, MachineProfileInput, VerifyExecutionObservation, VerifyInput,
 };
-use crate::workflow::{resolve_command_for_scope, GateDef, ResolvedWorkflow};
-use crate::runner::{execute_gate_commands, render_invocation_command, CommandExecReq};
+use crate::runner::{execute_gate_commands, render_deduped_segments, CommandExecReq};
 use crate::store::traits::{exec_tx_with, StateBackend};
 use crate::types::{
     CheckResultRecord, GateNodeRecord, NodeKind, NodeStatus, RunGraphSnapshot, TraceFinishInput,
@@ -23,7 +22,8 @@ use crate::usecases::lifecycle::{
     resolve_bound_node_worktree, resolve_repo_layout_optional,
 };
 use crate::usecases::queries::find_profile_gate_def;
-use acdd_core::errors::{ErrorCode, AcddError};
+use crate::workflow::{resolve_command_for_scope, GateDef, ResolvedWorkflow};
+use acdd_core::errors::{AcddError, ErrorCode};
 use acdd_core::ids::{GateId, TreeOid};
 use acdd_core::ports::{
     CompositeDomainProvider, DomainActionReq, DomainCheckOutcome, DomainCheckReq,
@@ -256,7 +256,9 @@ pub(crate) fn handle_verify_with_failure_return(
             &pre_changed_paths,
         )? {
             let run_id_for_tx = loaded.snapshot.run.run_id.clone();
-            exec_tx_with(backend, |tx| tx.apply_transition_plan(&run_id_for_tx, &lazy_plan))?;
+            exec_tx_with(backend, |tx| {
+                tx.apply_transition_plan(&run_id_for_tx, &lazy_plan)
+            })?;
             loaded.snapshot = backend.load_run_graph(&run_id_for_tx)?.ok_or_else(|| {
                 AcddError::new(
                     ErrorCode::BackendConflict,
@@ -362,13 +364,7 @@ pub(crate) fn handle_verify_with_failure_return(
     };
     let (mut check_results, index_generation, live_files_digest) =
         run_gate_checks(provider, &gate_def, &check_req)?;
-    verify_memory_spec_evidence(
-        config,
-        backend,
-        &check_req,
-        &gate_def,
-        &mut check_results,
-    )?;
+    verify_memory_spec_evidence(config, backend, &check_req, &gate_def, &mut check_results)?;
 
     let checks_params = Value::Array(
         machine_gate
@@ -647,16 +643,15 @@ pub(crate) fn resolve_commands(
         )
     })?;
     let invocations = resolve_command_for_scope(cmd_def, admitted_scope)?;
-    let mut rendered = Vec::with_capacity(invocations.len());
-    for inv in invocations {
-        rendered.extend(render_invocation_command(
-            &inv,
-            admitted_scope,
-            &profile.scope_args_by_pattern,
-            test_target,
-        )?);
-    }
-    Ok(rendered)
+    Ok(render_deduped_segments(
+        &invocations,
+        admitted_scope,
+        &profile.scope_args_by_pattern,
+        test_target,
+    )?
+    .into_iter()
+    .map(|(_, seg)| seg)
+    .collect())
 }
 
 type GateChecksOutput = (Vec<CheckResultRecord>, Option<String>, Option<String>);
@@ -919,8 +914,12 @@ fn verify_memory_spec_evidence(
         return Ok(());
     }
 
-    let needs_blackboard = cited.iter().any(|(_, _, raw)| is_numeric_or_hash_citation(raw.trim()));
-    let needs_specs = cited.iter().any(|(_, _, raw)| !is_numeric_or_hash_citation(raw.trim()));
+    let needs_blackboard = cited
+        .iter()
+        .any(|(_, _, raw)| is_numeric_or_hash_citation(raw.trim()));
+    let needs_specs = cited
+        .iter()
+        .any(|(_, _, raw)| !is_numeric_or_hash_citation(raw.trim()));
 
     let mut known_ids = std::collections::HashSet::new();
     if needs_blackboard {

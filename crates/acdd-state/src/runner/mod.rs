@@ -8,7 +8,7 @@ pub mod waves;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use command::render_invocation_command;
+pub(crate) use command::render_deduped_segments;
 pub use command::{execute_gate_commands, CommandExecReq};
 pub use spawner::{
     spawn_role_runner_borrowed, verify_runner_submitted, RoleSpawnBorrow, RoleSpawnOutcome,

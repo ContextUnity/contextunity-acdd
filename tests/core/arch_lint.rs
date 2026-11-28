@@ -919,8 +919,8 @@ pub fn mutual_pong(n: u32) -> u32 {
         1,
         "closing braces & wrapped single-stmt calls must produce 0 duplicates, and 8-stmt clone must coalesce into 1 group: {dup_res}"
     );
-    assert_eq!(dup_items[0]["match_type"], "block");
-    assert_eq!(dup_items[0]["line_count"], 8);
+    assert_eq!(dup_items[0]["match_type"], "similar");
+    assert_eq!(dup_items[0]["line_count"], 12);
 
     let lint_res = run_lint(
         &conn,

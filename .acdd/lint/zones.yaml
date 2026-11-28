@@ -2,7 +2,8 @@ unused_public_api: true
 complexity:
   severity: warn
   invariant: INV-BOUNDED-STRUCTURAL-COMPLEXITY
-  max_file_prod_lines: 1200
+  max_file_prod_lines: 800
+  max_file_prod_lines_error: 1200
 
 zones:
   core:

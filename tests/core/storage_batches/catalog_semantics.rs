@@ -19,6 +19,18 @@ fn lean_symbol_catalog_retains_no_full_facts_in_memory() -> anyhow::Result<()> {
             |row| row.get(0),
         )?;
         let mut facts = crate::common::decode_local_facts(&blob)?;
+        if let Ok(skel_blob) = connection.query_row(
+            "SELECT skeleton_blob FROM statement_skeletons WHERE path=?1",
+            [path],
+            |row| row.get::<_, Vec<u8>>(0),
+        ) {
+            let skels = acdd_index::typed_facts::decode_statement_skeletons(&skel_blob).unwrap();
+            for (entry, (_, hashes)) in facts.statement_fingerprints.iter_mut().zip(skels.iter()) {
+                for (stmt, &h) in entry.statements.iter_mut().zip(hashes.iter()) {
+                    stmt.skeleton_hash = h;
+                }
+            }
+        }
         facts
             .nodes
             .retain(|node| !matches!(node.kind.as_str(), "component" | "document"));

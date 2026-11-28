@@ -8,7 +8,7 @@ use crate::workflow::{
     render_command_with_scope_target, render_command_with_test_filter, resolve_command_for_scope,
     CommandDef, ResolvedCommandInvocation, ResourceLimits,
 };
-use acdd_core::errors::{ErrorCode, AcddError};
+use acdd_core::errors::{AcddError, ErrorCode};
 use acdd_core::ids::{NodeCursor, RunId};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -117,12 +117,15 @@ fn invocation_match_paths<'a>(
 
 /// Render one resolved command invocation into one or more independent shell commands by
 /// expanding `{scope_target}` per unique matched target before `{test_filter}`.
-pub(crate) fn render_invocation_command(
+fn render_invocation_command(
     inv: &ResolvedCommandInvocation,
     admitted_scope: &[String],
     profile_scope_args: &BTreeMap<String, String>,
     test_target: Option<&str>,
 ) -> Result<Vec<String>, AcddError> {
+    if inv.post_always {
+        return Ok(vec![inv.command.clone()]);
+    }
     let match_paths = invocation_match_paths(inv, admitted_scope);
     let effective_scope_args: Cow<'_, BTreeMap<String, String>> = if profile_scope_args.is_empty() {
         Cow::Borrowed(&inv.scope_args_by_pattern)
@@ -141,6 +144,28 @@ pub(crate) fn render_invocation_command(
         .into_iter()
         .map(|cmd| render_command_with_test_filter(&cmd, inv.test_filter.as_ref(), test_target))
         .collect()
+}
+
+/// Render every invocation and deduplicate identical full command strings across invocations
+/// (first occurrence wins) without splitting `&&` chains, preserving working-directory state and
+/// per-command timeout budgets. Returns `(invocation_index, command)` pairs in execution order.
+pub(crate) fn render_deduped_segments(
+    invocations: &[ResolvedCommandInvocation],
+    admitted_scope: &[String],
+    profile_scope_args: &BTreeMap<String, String>,
+    test_target: Option<&str>,
+) -> Result<Vec<(usize, String)>, AcddError> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
+    for (idx, inv) in invocations.iter().enumerate() {
+        for cmd in render_invocation_command(inv, admitted_scope, profile_scope_args, test_target)?
+        {
+            if seen.insert(cmd.clone()) {
+                out.push((idx, cmd));
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Execute gate command(s) in an isolated process group with bounded line/log capture.
@@ -182,67 +207,59 @@ pub(super) fn execute_gate_commands_inner(
         open_run_log_file(&req.primary_worktree, &req.run_id, &filename)?;
     let mut log_writer = BoundedLogWriter::new(file, req.limits.max_log_bytes);
 
-    let mut rendered_commands = Vec::with_capacity(invocations.len());
+    let segments = render_deduped_segments(
+        &invocations,
+        &req.scope,
+        &req.profile_scope_args,
+        req.test_target.as_deref(),
+    )?;
+    let mut rendered_commands = Vec::with_capacity(segments.len());
     let mut last_exit_code = None;
     let mut timed_out = false;
     let max_capture_bytes = req.limits.max_capture_bytes;
     let mut captured_bytes = 0usize;
     let mut stderr_retained = String::new();
 
-    for inv in &invocations {
-        let rendered_cmds = render_invocation_command(
-            inv,
-            &req.scope,
-            &req.profile_scope_args,
-            req.test_target.as_deref(),
-        )?;
+    for (idx, rendered_cmd) in segments {
         let timeout = timeout_override.unwrap_or_else(|| {
-            let secs = inv
+            let secs = invocations[idx]
                 .timeout_seconds
                 .unwrap_or(req.limits.max_command_timeout_seconds)
                 .min(req.limits.max_command_timeout_seconds)
                 .max(1);
             Duration::from_secs(secs)
         });
+        rendered_commands.push(rendered_cmd.clone());
 
-        for rendered_cmd in rendered_cmds {
-            rendered_commands.push(rendered_cmd.clone());
+        let mut cmd = shell_command(&rendered_cmd);
+        cmd.current_dir(&req.worktree);
+        sanitize_command_process(&mut cmd);
 
-            let mut cmd = shell_command(&rendered_cmd);
-            cmd.current_dir(&req.worktree);
-            sanitize_command_process(&mut cmd);
+        let outcome = run_isolated_process(
+            &mut cmd,
+            None,
+            timeout,
+            req.limits.max_line_bytes,
+            &mut |stream, line| {
+                log_writer.write_line(line).map_err(|err| {
+                    AcddError::new(
+                        ErrorCode::GateVerificationFailed,
+                        format!("failed writing command log: {err}"),
+                    )
+                })?;
+                observe_bounded_output(
+                    stream,
+                    line,
+                    max_capture_bytes,
+                    &mut captured_bytes,
+                    &mut stderr_retained,
+                );
+                Ok(())
+            },
+        )?;
 
-            let outcome = run_isolated_process(
-                &mut cmd,
-                None,
-                timeout,
-                req.limits.max_line_bytes,
-                &mut |stream, line| {
-                    log_writer.write_line(line).map_err(|err| {
-                        AcddError::new(
-                            ErrorCode::GateVerificationFailed,
-                            format!("failed writing command log: {err}"),
-                        )
-                    })?;
-                    observe_bounded_output(
-                        stream,
-                        line,
-                        max_capture_bytes,
-                        &mut captured_bytes,
-                        &mut stderr_retained,
-                    );
-                    Ok(())
-                },
-            )?;
-
-            last_exit_code = outcome.exit_code;
-            timed_out = outcome.timed_out;
-
-            if timed_out || last_exit_code != Some(0) {
-                break;
-            }
-        }
-
+        last_exit_code = outcome.exit_code;
+        timed_out = outcome.timed_out;
         if timed_out || last_exit_code != Some(0) {
             break;
         }
@@ -292,8 +309,53 @@ fn observe_bounded_output(
 
 #[cfg(test)]
 mod tests {
-    use super::sanitize_command_process;
+    use super::{render_deduped_segments, sanitize_command_process};
+    use crate::workflow::ResolvedCommandInvocation;
+    use std::collections::BTreeMap;
     use std::process::Command;
+
+    fn inv(command: &str) -> ResolvedCommandInvocation {
+        ResolvedCommandInvocation {
+            command: command.to_owned(),
+            test_filter: None,
+            timeout_seconds: None,
+            scope_args_by_pattern: BTreeMap::new(),
+            matched_paths: Vec::new(),
+            post_always: false,
+        }
+    }
+
+    #[test]
+    fn deduped_segments_run_shared_chain_steps_once_and_keep_quoted_chains_whole() {
+        let mut first = inv("cargo clippy --test a && cargo test --test a {test_filter}");
+        first.test_filter =
+            Some(crate::workflow::schema::TestFilterConfig::Template("{test}".to_owned()));
+        let dup = first.clone();
+        let mut post = inv("cargo test --test commitment_integrity");
+        post.post_always = true;
+        let invs = [
+            first,
+            dup,
+            inv("sh -c 'x && y'"),
+            post,
+        ];
+        let scope = vec!["crates/acdd-state/src/lib.rs".to_owned()];
+        let scope_args = BTreeMap::from([(
+            "crates/acdd-state/**".to_owned(),
+            "--package acdd-state --lib".to_owned(),
+        )]);
+        let segs = render_deduped_segments(&invs, &scope, &scope_args, Some("my_test")).unwrap();
+        let cmds: Vec<&str> = segs.iter().map(|(_, c)| c.as_str()).collect();
+        assert_eq!(
+            cmds,
+            [
+                "cargo clippy --test a && cargo test --test a 'my_test'",
+                "sh -c 'x && y' --package acdd-state --lib 'my_test'",
+                "cargo test --test commitment_integrity",
+            ]
+        );
+        assert_eq!(segs[2].0, 3);
+    }
 
     #[test]
     fn sanitize_command_process_scrubs_orchestrator_and_all_git_vars() {

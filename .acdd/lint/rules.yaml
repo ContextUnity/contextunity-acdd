@@ -321,3 +321,114 @@ rules:
       paths: ["src/*.rs"]
     edge_kinds: [imports]
     message: "Workspace production module import graph must remain acyclic (including same-directory modules)"
+
+  - id: ARCH-NO-HARDCODED-LANG-RUST-IN-GENERIC
+    severity: error
+    kind: ast_pattern
+    from:
+      paths:
+        - "crates/acdd-index/src/db/lint/**"
+        - "crates/acdd-index/src/linker/resolution/**"
+        - "crates/acdd-index/src/linker/semantic_context/**"
+      exclude_paths:
+        - "crates/acdd-index/src/db/lint/unused_public_api.rs"
+        - "crates/acdd-index/src/db/lint/arch.rs"
+      languages: ["rust"]
+    ast_pattern: "\"rust\""
+    message: "Universal lint and linker modules must delegate language specifics to LanguageProfile/LanguageLinker instead of hardcoding \"rust\""
+
+  - id: ARCH-NO-HARDCODED-LANG-PYTHON-IN-GENERIC
+    severity: error
+    kind: ast_pattern
+    from:
+      paths:
+        - "crates/acdd-index/src/db/lint/**"
+        - "crates/acdd-index/src/linker/resolution/**"
+        - "crates/acdd-index/src/linker/semantic_context/**"
+      exclude_paths:
+        - "crates/acdd-index/src/db/lint/arch.rs"
+      languages: ["rust"]
+    ast_pattern: "\"python\""
+    message: "Universal lint and linker modules must delegate language specifics to LanguageProfile/LanguageLinker instead of hardcoding \"python\""
+
+  - id: ARCH-NO-HARDCODED-LANG-TS-IN-GENERIC
+    severity: error
+    kind: ast_pattern
+    from:
+      paths:
+        - "crates/acdd-index/src/db/lint/**"
+        - "crates/acdd-index/src/linker/resolution/**"
+        - "crates/acdd-index/src/linker/semantic_context/**"
+      exclude_paths:
+        - "crates/acdd-index/src/db/lint/arch.rs"
+      languages: ["rust"]
+    ast_pattern: "\"typescript\""
+    message: "Universal lint and linker modules must delegate language specifics to LanguageProfile/LanguageLinker instead of hardcoding \"typescript\""
+
+  - id: ARCH-NO-HARDCODED-LANG-JS-IN-GENERIC
+    severity: error
+    kind: ast_pattern
+    from:
+      paths:
+        - "crates/acdd-index/src/db/lint/**"
+        - "crates/acdd-index/src/linker/resolution/**"
+        - "crates/acdd-index/src/linker/semantic_context/**"
+      exclude_paths:
+        - "crates/acdd-index/src/db/lint/arch.rs"
+        - "crates/acdd-index/src/db/lint/syntax.rs"
+      languages: ["rust"]
+    ast_pattern: "\"javascript\""
+    message: "Universal lint and linker modules must delegate language specifics to LanguageProfile/LanguageLinker instead of hardcoding \"javascript\""
+
+  - id: ARCH-NO-HARDCODED-COLLECTION-MILESTONES
+    severity: error
+    kind: ast_pattern
+    from:
+      paths:
+        - "crates/acdd-core/src/**"
+        - "crates/acdd-spec/src/**"
+        - "crates/acdd-state/src/**"
+        - "crates/acdd-index/src/**"
+      exclude_paths:
+        - "crates/acdd-core/src/config/**"
+        - "crates/acdd-index/src/db/reader/types.rs"
+        - "crates/acdd-state/src/harness.rs"
+        - "**/tests.rs"
+        - "**/tests/**"
+      languages: ["rust"]
+    ast_pattern: "\"milestones\""
+    message: "Library crates must resolve spec collections from config instead of hardcoding \"milestones\""
+
+  - id: ARCH-NO-HARDCODED-COLLECTION-MEMORIES
+    severity: error
+    kind: ast_pattern
+    from:
+      paths:
+        - "crates/acdd-core/src/**"
+        - "crates/acdd-spec/src/**"
+        - "crates/acdd-state/src/**"
+        - "crates/acdd-index/src/**"
+      exclude_paths:
+        - "crates/acdd-core/src/config/**"
+        - "**/tests.rs"
+        - "**/tests/**"
+      languages: ["rust"]
+    ast_pattern: "\"memories\""
+    message: "Library crates must resolve spec collections from config instead of hardcoding \"memories\""
+
+  - id: ARCH-NO-HARDCODED-COLLECTION-RETROSPECTIVES
+    severity: error
+    kind: ast_pattern
+    from:
+      paths:
+        - "crates/acdd-core/src/**"
+        - "crates/acdd-spec/src/**"
+        - "crates/acdd-state/src/**"
+        - "crates/acdd-index/src/**"
+      exclude_paths:
+        - "crates/acdd-core/src/config/**"
+        - "**/tests.rs"
+        - "**/tests/**"
+      languages: ["rust"]
+    ast_pattern: "\"retrospectives\""
+    message: "Library crates must resolve spec collections from config instead of hardcoding \"retrospectives\""

@@ -190,7 +190,7 @@ impl Default for SpecConfig {
 }
 
 /// Default single-segment directory and router-doc ignore patterns for spec collections when `ignore:` is omitted.
-pub const DEFAULT_SPEC_IGNORE: &[&str] = &["archive", ".*", "README.md", "AGENTS.md", "CLAUDE.md"];
+pub(crate) const DEFAULT_SPEC_IGNORE: &[&str] = &["archive", ".*", "README.md", "AGENTS.md", "CLAUDE.md"];
 
 impl SpecConfig {
     /// Effective built-in base (`"contract"` or `"memory"`) for a named collection,

@@ -1383,7 +1383,7 @@ pub fn new_masked_clone(x: i32) -> i32 {
                 &DomainCheckReq {
                     admitted_scope: vec!["src/new_clone.rs".to_owned()],
                     changed_paths: vec!["src/new_clone.rs".to_owned()],
-                    ..check_req
+                    ..check_req.clone()
                 },
             )
             .unwrap();
@@ -1393,7 +1393,55 @@ pub fn new_masked_clone(x: i32) -> i32 {
                 DomainCheckOutcome::Failed { ref diagnostics, .. }
                     if diagnostics.iter().any(|d| d.contains("duplicates.similar"))
             ),
-            "newly introduced literal-masked clone must fail duplicates.similar: {masked_outcome:?}"
+            "new 7-stmt literal-masked clone must fail duplicates.similar: {masked_outcome:?}"
+        );
+        fs::remove_file(root.join("src/new_clone.rs")).unwrap();
+
+        // 6. Git-baseline file-monolith ratchet (`max_file_prod_lines: 10` WARN, `max_file_prod_lines_error: 20` ERROR).
+        fs::create_dir_all(root.join(".acdd/lint")).unwrap();
+        fs::write(root.join("acdd.yaml"), "lint_dirs:\n  - .acdd/lint\n").unwrap();
+        fs::write(
+            root.join(".acdd/lint/zones.yaml"),
+            "complexity:\n  severity: warn\n  max_file_prod_lines: 10\n  max_file_prod_lines_error: 20\nzones:\n  src:\n    - \"src/**\"\n",
+        )
+        .unwrap();
+        let existing_monolith = providers
+            .run_check(
+                "code.lint",
+                &json!({ "categories": ["syntax"] }),
+                &DomainCheckReq {
+                    admitted_scope: vec!["src/eligible_ninth.rs".to_owned()],
+                    changed_paths: vec!["src/eligible_ninth.rs".to_owned()],
+                    ..check_req.clone()
+                },
+            )
+            .unwrap();
+        assert!(
+            matches!(existing_monolith, DomainCheckOutcome::Passed { .. }),
+            "unchanged file above warn threshold must stay non-blocking: {existing_monolith:?}"
+        );
+        let big_new: String = (0..25)
+            .map(|i| format!("pub fn f_{i}() -> i32 {{ {i} }}\n"))
+            .collect();
+        fs::write(root.join("src/big_new.rs"), big_new).unwrap();
+        let new_monolith = providers
+            .run_check(
+                "code.lint",
+                &json!({ "categories": ["syntax"] }),
+                &DomainCheckReq {
+                    admitted_scope: vec!["src/big_new.rs".to_owned()],
+                    changed_paths: vec!["src/big_new.rs".to_owned()],
+                    ..check_req
+                },
+            )
+            .unwrap();
+        assert!(
+            matches!(
+                new_monolith,
+                DomainCheckOutcome::Failed { ref diagnostics, .. }
+                    if diagnostics.iter().any(|d| d.contains("syntax.file_prod_lines_exceeded") && d.contains("error ratchet 20, new file"))
+            ),
+            "new file exceeding max_file_prod_lines_error must fail syntax ratchet: {new_monolith:?}"
         );
     }
 }

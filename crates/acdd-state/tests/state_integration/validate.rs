@@ -9,20 +9,20 @@ use acdd_core::ports::{
 use acdd_core::response::ResponsePolicy;
 use acdd_core::schema::SchemaDef;
 use acdd_core::subsystems::SubsystemRegistry;
+use acdd_spec::parse_spec;
 use acdd_state::harness::RunHarness;
 use acdd_state::machine::{evaluate_transition, ExtendScopeInput, TransitionInput};
-use acdd_spec::parse_spec;
-use acdd_state::workflow::resolve_optional_workflow_ref_with_dirs;
 use acdd_state::store::traits::exec_tx_with;
 use acdd_state::types::{
     GateNodeRecord, IsolationMode, NodeKind, NodeStatus, RunGraphSnapshot, RunRecord, RunStatus,
     RunTombstoneRecord, StoragePreconditions, TerminalStatus,
 };
 use acdd_state::usecases::deps::verify_run_level_depends_on;
-use acdd_state::usecases::overlay::validate_spec_dependencies;
 use acdd_state::usecases::lifecycle::to_machine_profile;
+use acdd_state::usecases::overlay::validate_spec_dependencies;
 use acdd_state::usecases::StateEngineConfig;
 use acdd_state::validate::{validate_document, validate_spec_for_run, validate_workspace};
+use acdd_state::workflow::resolve_optional_workflow_ref_with_dirs;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
@@ -158,7 +158,10 @@ fn validate_workspace_config_profile_and_spec_matrix() {
         "modules:\n  code: true\n  docs: true\n  state: true\n",
     )
     .unwrap();
-    write_bound_profile(root, "protected_paths: [Cargo.toml, .acdd/workflows/default.yaml]\n");
+    write_bound_profile(
+        root,
+        "protected_paths: [Cargo.toml, .acdd/workflows/default.yaml]\n",
+    );
     fs::create_dir_all(root.join("docs/milestones")).unwrap();
     fs::create_dir_all(root.join("docs/plans")).unwrap();
 
@@ -302,7 +305,8 @@ fn validate_workspace_config_profile_and_spec_matrix() {
         allowed_binary_extensions: None,
     };
     let resolved_p =
-        resolve_optional_workflow_ref_with_dirs(None, Some(root), Some(&cfg.modules), None).unwrap();
+        resolve_optional_workflow_ref_with_dirs(None, Some(root), Some(&cfg.modules), None)
+            .unwrap();
     let harness = RunHarness::in_memory().unwrap();
     validate_spec_for_run(&cfg, &harness, &providers, &dep_05_doc, &resolved_p).unwrap();
 
@@ -701,7 +705,7 @@ fn validate_workspace_config_profile_and_spec_matrix() {
 
     // (f) Parameterized ContextEntry canonical serialization: empty `with: {}` compacts to string,
     //     non-empty `with` serializes as canonical `{ context, with }` object.
-    let compact_entry = acdd_state::workflow::ContextEntry {
+    let compact_entry = acdd_state::workflow::schema::ContextEntry {
         context: "specs.memories".to_owned(),
         with: serde_json::json!({}),
     };
@@ -709,7 +713,7 @@ fn validate_workspace_config_profile_and_spec_matrix() {
         serde_json::to_value(&compact_entry).unwrap(),
         serde_json::json!("specs.memories")
     );
-    let non_empty_entry = acdd_state::workflow::ContextEntry {
+    let non_empty_entry = acdd_state::workflow::schema::ContextEntry {
         context: "http.endpoints".to_owned(),
         with: serde_json::json!({"url": "https://example.test"}),
     };

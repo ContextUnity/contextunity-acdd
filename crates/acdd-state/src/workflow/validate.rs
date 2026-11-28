@@ -8,7 +8,7 @@ use super::shell_template::{glob_specificity, validate_shell_template_placeholde
 use super::when::WhenExpr;
 use crate::types::SaveAction;
 use acdd_core::config::SpecConfig;
-use acdd_core::errors::{ErrorCode, AcddError};
+use acdd_core::errors::{AcddError, ErrorCode};
 use acdd_core::ids::{GateId, GateSelector};
 use acdd_core::path_policy::{
     is_valid_scope_glob, normalize_rel_path, should_skip_walk_dir, WorkspacePathPolicy,
@@ -60,6 +60,8 @@ pub struct ResolvedCommandInvocation {
     pub scope_args_by_pattern: BTreeMap<String, String>,
     /// Sorted `scope` paths that matched this invocation (empty for non-pattern commands).
     pub matched_paths: Vec<String>,
+    /// When `true`, runs verbatim without `{scope_target}` or `{test_filter}` expansion.
+    pub post_always: bool,
 }
 
 /// Validate a `ResolvedWorkflow` fail-closed against `DomainProvider` capabilities, `modules:`, and all schema invariants.
@@ -743,7 +745,9 @@ fn validate_named_spec_ref<'a>(
     if name.is_empty() {
         return Err(AcddError::new(
             ErrorCode::WorkflowSchemaInvalid,
-            format!("{ctx}: {field} entry '{raw}' must name a registered spec (e.g. 'specs.memories')"),
+            format!(
+                "{ctx}: {field} entry '{raw}' must name a registered spec (e.g. 'specs.memories')"
+            ),
         ));
     }
     let matched = acdd_spec::matching_spec_collections(effective_specs, name);
@@ -770,7 +774,9 @@ fn validate_named_path_ref<'a>(
     if name.is_empty() {
         return Err(AcddError::new(
             ErrorCode::WorkflowSchemaInvalid,
-            format!("{ctx}: {field} entry '{raw}' must name a declared path group (e.g. 'paths.docs')"),
+            format!(
+                "{ctx}: {field} entry '{raw}' must name a declared path group (e.g. 'paths.docs')"
+            ),
         ));
     }
     profile.paths.get(name).map(Vec::as_slice).ok_or_else(|| {
@@ -838,7 +844,10 @@ fn validate_gate_scope(
         reject_legacy_lens_or_scope(pat, ctx, "scope:")?;
         if pat.starts_with("specs.") {
             let cols = validate_named_spec_ref(pat, &effective_specs, ctx, "scope:")?;
-            let patterns: Vec<&str> = cols.into_iter().flat_map(|(_, col)| col.patterns()).collect();
+            let patterns: Vec<&str> = cols
+                .into_iter()
+                .flat_map(|(_, col)| col.patterns())
+                .collect();
             if patterns.is_empty() || patterns.iter().any(|p| !is_valid_scope_glob(p)) {
                 return Err(AcddError::new(
                     ErrorCode::WorkflowSchemaInvalid,
@@ -953,10 +962,8 @@ pub fn collect_workflow_glob_warnings(
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
             if ft.is_dir() {
-                if should_skip_walk_dir(
-                    dir.file_name().and_then(|p| p.to_str()),
-                    name_str.as_ref(),
-                ) {
+                if should_skip_walk_dir(dir.file_name().and_then(|p| p.to_str()), name_str.as_ref())
+                {
                     continue;
                 }
                 stack.push(path);
@@ -1273,6 +1280,7 @@ pub fn resolve_command_for_scope(
             timeout_seconds: None,
             scope_args_by_pattern: BTreeMap::new(),
             matched_paths: Vec::new(),
+            post_always: false,
         }]),
         CommandDef::Detailed(d) => Ok(vec![ResolvedCommandInvocation {
             command: d.command.clone(),
@@ -1280,6 +1288,7 @@ pub fn resolve_command_for_scope(
             timeout_seconds: d.timeout_seconds,
             scope_args_by_pattern: d.scope_args_by_pattern.clone(),
             matched_paths: Vec::new(),
+            post_always: false,
         }]),
         CommandDef::Pattern(entries) => {
             if entries.is_empty() {
@@ -1298,6 +1307,9 @@ pub fn resolve_command_for_scope(
             for path in &sorted_scope {
                 let mut best: Option<((usize, usize, usize, usize), usize)> = None;
                 for (idx, entry) in entries.iter().enumerate() {
+                    if entry.post_always {
+                        continue;
+                    }
                     if acdd_core::path_policy::glob_matches(&entry.pattern, path) {
                         let spec = glob_specificity(&entry.pattern);
                         let better = match best {
@@ -1322,7 +1334,7 @@ pub fn resolve_command_for_scope(
                 }
             }
 
-            let out = selected_order
+            let mut out: Vec<ResolvedCommandInvocation> = selected_order
                 .into_iter()
                 .map(|idx| {
                     let entry = &entries[idx];
@@ -1332,66 +1344,25 @@ pub fn resolve_command_for_scope(
                         timeout_seconds: entry.timeout_seconds,
                         scope_args_by_pattern: entry.scope_args_by_pattern.clone(),
                         matched_paths: matched_by_idx.remove(&idx).unwrap_or_default(),
+                        post_always: false,
                     }
                 })
                 .collect();
+            if !out.is_empty() {
+                for entry in entries.iter().filter(|e| e.post_always) {
+                    out.push(ResolvedCommandInvocation {
+                        command: entry.command.clone(),
+                        test_filter: None,
+                        timeout_seconds: entry.timeout_seconds,
+                        scope_args_by_pattern: BTreeMap::new(),
+                        matched_paths: Vec::new(),
+                        post_always: true,
+                    });
+                }
+            }
             Ok(out)
         }
     }
 }
 
-/// Resolve all `guidance` items on a `GateDef` against `profile.guidance`, enforcing the mandatory budget cap.
-pub fn resolve_and_budget_guidance(
-    profile: &ResolvedWorkflow,
-    gate: &GateDef,
-    contract_bytes: usize,
-    response_max_bytes: usize,
-) -> Result<Vec<String>, AcddError> {
-    let mut rendered = Vec::with_capacity(gate.guidance.len());
-    let mut guidance_bytes = 0usize;
-    for item in &gate.guidance {
-        let text = match item {
-            GateGuidanceRef::Slot(slot) => profile
-                .guidance
-                .get(slot)
-                .ok_or_else(|| {
-                    AcddError::new(
-                        ErrorCode::UnknownGuidanceSlot,
-                        format!("gate '{}': unknown guidance slot '{slot}'", gate.id),
-                    )
-                })?
-                .render(),
-            GateGuidanceRef::Inline(inline) => inline.inline.clone(),
-        };
-        guidance_bytes += text.len();
-        rendered.push(text);
-    }
-    check_guidance_budget(
-        contract_bytes,
-        guidance_bytes,
-        &profile.limits,
-        response_max_bytes,
-    )?;
-    Ok(rendered)
-}
-
-/// Enforce the fail-closed mandatory `contract + guidance` byte reservation cap.
-pub fn check_guidance_budget(
-    contract_bytes: usize,
-    guidance_bytes: usize,
-    limits: &ResourceLimits,
-    response_max_bytes: usize,
-) -> Result<usize, AcddError> {
-    let total = contract_bytes.saturating_add(guidance_bytes);
-    let cap = limits.max_guidance_bytes.min(response_max_bytes);
-    if total > cap {
-        return Err(AcddError::new(
-            ErrorCode::GuidanceBudgetExceeded,
-            format!(
-                "mandatory contract + guidance ({total} bytes) exceeds reserved budget ({cap} bytes)"
-            ),
-        )
-        .with_hint("Reduce inline guidance or task spec/invariants size so mandatory instructions fit without truncation"));
-    }
-    Ok(cap - total)
-}
+pub use super::shell_template::{check_guidance_budget, resolve_and_budget_guidance};

@@ -86,12 +86,20 @@ pub(super) fn collect_syntax_violations(
     index: &LintIndexData,
     complexity: &ComplexityLimits,
     workspace_root: Option<&Path>,
+    baseline_ref: Option<&str>,
     violations: &mut Vec<LintViolation>,
 ) -> Result<()> {
     collect_parse_violations(conn, &index.scope, violations)?;
     collect_fact_budget_violations(conn, index, complexity, violations)?;
     collect_type_homonym_violations(conn, index, complexity, workspace_root, violations)?;
-    collect_file_prod_lines_violations(conn, index, complexity, violations)?;
+    collect_file_prod_lines_violations(
+        conn,
+        index,
+        complexity,
+        workspace_root,
+        baseline_ref,
+        violations,
+    )?;
     collect_cognitive_complexity_violations(conn, index, complexity, violations)?;
     Ok(())
 }
@@ -354,11 +362,13 @@ fn collect_file_prod_lines_violations(
     conn: &Connection,
     index: &LintIndexData,
     complexity: &ComplexityLimits,
+    workspace_root: Option<&Path>,
+    baseline_ref: Option<&str>,
     violations: &mut Vec<LintViolation>,
 ) -> Result<()> {
-    let Some(limit) = complexity.max_file_prod_lines else {
+    if complexity.max_file_prod_lines.is_none() && complexity.max_file_prod_lines_error.is_none() {
         return Ok(());
-    };
+    }
     let prefix_target = index.scope.exact_prefix().unwrap_or("");
     let (lower, upper) = path_bounds(prefix_target);
     let mut stmt = conn.prepare(
@@ -384,18 +394,92 @@ fn collect_file_prod_lines_violations(
             .and_modify(|cur| *cur = (*cur).max(end_line))
             .or_insert(end_line);
     }
+
+    // Lazy Git-baseline ratchet: only inspect Git blobs for files exceeding `max_file_prod_lines_error`.
+    let mut baseline_max_end: BTreeMap<String, Option<usize>> = BTreeMap::new();
+    if let (Some(err_limit), Some(root)) = (complexity.max_file_prod_lines_error, workspace_root) {
+        let over_err: Vec<&str> = max_end_by_path
+            .iter()
+            .filter_map(|(path, &max_end)| (max_end > err_limit).then_some(path.as_str()))
+            .collect();
+        if !over_err.is_empty() && acdd_core::git::ensure_git_repo(root).is_ok() {
+            let bref = baseline_ref.unwrap_or("HEAD");
+            let unborn_head = bref == "HEAD"
+                && acdd_core::git::git_head_oid(root)
+                    .ok()
+                    .flatten()
+                    .is_none();
+            if unborn_head {
+                for path in over_err {
+                    baseline_max_end.insert(path.to_owned(), None);
+                }
+            } else {
+                let specs: Vec<(&str, &str)> = over_err.iter().map(|&p| (bref, p)).collect();
+                if let Ok(blobs) = acdd_core::git::read_git_blobs_at_paths_batch(root, &specs) {
+                    for (path, blob_res) in over_err.into_iter().zip(blobs) {
+                        let base_end = blob_res
+                            .ok()
+                            .flatten()
+                            .and_then(|source| {
+                                let lang = crate::languages::for_path(Path::new(path))?;
+                                let typed =
+                                    crate::ast::extract_typed(path, lang.id(), &source).ok()?;
+                                typed
+                                    .facts
+                                    .nodes
+                                    .iter()
+                                    .filter(|n| {
+                                        !n.is_test
+                                            && !n.generated
+                                            && !matches!(n.kind.as_str(), "module" | "file")
+                                    })
+                                    .map(|n| n.end_line)
+                                    .max()
+                            });
+                        baseline_max_end.insert(path.to_owned(), base_end);
+                    }
+                }
+            }
+        }
+    }
+
     let inv = complexity.invariant.as_deref();
     for (path, max_end) in max_end_by_path {
-        if max_end > limit {
+        let ratchet_error = complexity
+            .max_file_prod_lines_error
+            .filter(|&err_limit| max_end > err_limit)
+            .and_then(|err_limit| {
+                baseline_max_end
+                    .get(&path)
+                    .map(|base| (err_limit, *base))
+            })
+            .filter(|(_, base_end)| base_end.is_none_or(|b| max_end > b));
+
+        if let Some((err_limit, base_end)) = ratchet_error {
+            let base_desc = base_end.map_or_else(|| "new file".to_owned(), |b| format!("baseline {b}"));
             push_syntax(
                 violations,
                 "syntax.file_prod_lines_exceeded",
-                complexity.severity,
+                LintSeverity::Error,
                 (&path, max_end, &path),
-                format!("file '{path}' reaches production line {max_end} (limit {limit})"),
+                format!(
+                    "file '{path}' reaches production line {max_end} (error ratchet {err_limit}, {base_desc})"
+                ),
                 inv,
                 Some("Split oversized production module into focused submodules."),
             );
+        } else if let Some(limit) = complexity.max_file_prod_lines {
+            if max_end > limit {
+                push_syntax(
+                    violations,
+                    "syntax.file_prod_lines_exceeded",
+                    complexity.severity,
+                    (&path, max_end, &path),
+                    format!("file '{path}' reaches production line {max_end} (limit {limit})"),
+                    inv,
+                    Some("Split oversized production module into focused submodules."),
+                );
+            }
         }
     }
     Ok(())

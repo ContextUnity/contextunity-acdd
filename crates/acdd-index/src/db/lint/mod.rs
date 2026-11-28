@@ -128,6 +128,7 @@ pub fn run_lint_with_diff(
             &index,
             &arch_cfg.complexity,
             request.workspace_root,
+            diff.and_then(|d| d.baseline_ref),
             &mut violations,
         )?;
     }

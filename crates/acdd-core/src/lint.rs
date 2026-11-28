@@ -330,6 +330,9 @@ pub struct ComplexityLimits {
     /// Optional maximum non-test production end line per file (`syntax.file_prod_lines_exceeded`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_file_prod_lines: Option<usize>,
+    /// Optional hard-error Git-baseline ratchet ceiling for production end line per file (`syntax.file_prod_lines_exceeded`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_file_prod_lines_error: Option<usize>,
     /// Optional maximum callable cognitive complexity (`syntax.cognitive_complexity_exceeded`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_cognitive_complexity: Option<usize>,
@@ -341,6 +344,7 @@ impl Default for ComplexityLimits {
             severity: LintSeverity::Warn,
             invariant: None,
             max_file_prod_lines: None,
+            max_file_prod_lines_error: None,
             max_cognitive_complexity: None,
         }
     }
@@ -367,6 +371,18 @@ impl ComplexityLimits {
             return Err(schema_invalid(
                 "architecture.complexity.max_file_prod_lines must be >= 1 when specified",
             ));
+        }
+        if self.max_file_prod_lines_error == Some(0) {
+            return Err(schema_invalid(
+                "architecture.complexity.max_file_prod_lines_error must be >= 1 when specified",
+            ));
+        }
+        if let (Some(warn), Some(err)) = (self.max_file_prod_lines, self.max_file_prod_lines_error) {
+            if err < warn {
+                return Err(schema_invalid(
+                    "architecture.complexity.max_file_prod_lines_error must be >= max_file_prod_lines",
+                ));
+            }
         }
         if self.max_cognitive_complexity == Some(0) {
             return Err(schema_invalid(
@@ -700,6 +716,27 @@ rules:
         let schema = lint_check_input_schema();
         schema.validate_schema("$").unwrap();
         let _json_schema = schemars::schema_for!(ArchitectureConfig);
+
+        assert!(ComplexityLimits {
+            max_file_prod_lines_error: Some(0),
+            ..ComplexityLimits::default()
+        }
+        .validate()
+        .is_err());
+        assert!(ComplexityLimits {
+            max_file_prod_lines: Some(800),
+            max_file_prod_lines_error: Some(400),
+            ..ComplexityLimits::default()
+        }
+        .validate()
+        .is_err());
+        assert!(ComplexityLimits {
+            max_file_prod_lines: Some(800),
+            max_file_prod_lines_error: Some(1200),
+            ..ComplexityLimits::default()
+        }
+        .validate()
+        .is_ok());
 
         for (label, val, expect_ok) in [
             ("empty", json!({}), true),

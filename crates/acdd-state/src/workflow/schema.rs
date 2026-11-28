@@ -1,13 +1,13 @@
 //! Version-2 `WorkflowDef` schema definitions, patch types, and strict `deny_unknown_fields` deserialization.
 
 use crate::types::{IsolationMode, SaveAction, WorktreeLifecycle};
-use acdd_core::errors::{ErrorCode, AcddError};
+use acdd_core::errors::{AcddError, ErrorCode};
 use acdd_core::format::{canonical_json_sha256, canonical_json_string};
 use acdd_core::ids::{GateId, GateSelector};
 use acdd_core::schema::SchemaDef;
 use acdd_core::subsystems::{SubsystemPreset, SubsystemRegistry};
 use schemars::JsonSchema;
-use serde::de::{self, Deserializer, MapAccess, Visitor};
+use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -317,6 +317,9 @@ pub struct PatternCommandEntry {
     /// Optional path-pattern to `{scope_target}` argument mappings.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub scope_args_by_pattern: BTreeMap<String, String>,
+    /// When `true`, runs once after all matched pattern invocations instead of competing per path.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub post_always: bool,
 }
 
 /// Command slot definition (`unbound: true`, `Script`, `Detailed`, or `Pattern`).
@@ -337,116 +340,6 @@ pub enum CommandDef {
     Detailed(Box<DetailedCommandDef>),
     /// Ordered pattern-matched command entries (selected by glob specificity, then YAML order).
     Pattern(Vec<PatternCommandEntry>),
-}
-
-impl<'de> Deserialize<'de> for CommandDef {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct UnboundRepr {
-            unbound: bool,
-            #[serde(default)]
-            description: Option<String>,
-        }
-
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct PatternMapBlock {
-            by_pattern: ByPatternPairs,
-            #[serde(default)]
-            description: Option<String>,
-            #[serde(default)]
-            timeout_seconds: Option<u64>,
-            #[serde(default)]
-            test_filter: Option<TestFilterConfig>,
-            #[serde(default)]
-            scope_args_by_pattern: BTreeMap<String, String>,
-        }
-
-        struct ByPatternPairs(Vec<(String, String)>);
-
-        impl<'de> Deserialize<'de> for ByPatternPairs {
-            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-            where
-                D: Deserializer<'de>,
-            {
-                struct PairsVisitor;
-                impl<'de> Visitor<'de> for PairsVisitor {
-                    type Value = ByPatternPairs;
-
-                    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                        f.write_str("an ordered mapping of glob pattern to command string")
-                    }
-
-                    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-                    where
-                        A: MapAccess<'de>,
-                    {
-                        let mut out = Vec::new();
-                        while let Some((k, v)) = map.next_entry::<String, String>()? {
-                            out.push((k, v));
-                        }
-                        Ok(ByPatternPairs(out))
-                    }
-                }
-                deserializer.deserialize_map(PairsVisitor)
-            }
-        }
-
-        let val = serde_yaml::Value::deserialize(deserializer)?;
-        match &val {
-            serde_yaml::Value::String(s) => Ok(Self::Script(s.clone())),
-            serde_yaml::Value::Sequence(_) => {
-                let entries: Vec<PatternCommandEntry> =
-                    serde_yaml::from_value(val).map_err(de::Error::custom)?;
-                Ok(Self::Pattern(entries))
-            }
-            serde_yaml::Value::Mapping(map) => {
-                let has_unbound = map.contains_key(serde_yaml::Value::String("unbound".into()));
-                let has_by_pattern =
-                    map.contains_key(serde_yaml::Value::String("by_pattern".into()));
-                if has_unbound {
-                    let u: UnboundRepr = serde_yaml::from_value(val).map_err(de::Error::custom)?;
-                    if !u.unbound {
-                        return Err(de::Error::custom(
-                            "unbound command slot must set 'unbound: true' or provide a command",
-                        ));
-                    }
-                    Ok(Self::Unbound {
-                        unbound: u.unbound,
-                        description: u.description,
-                    })
-                } else if has_by_pattern {
-                    let block: PatternMapBlock =
-                        serde_yaml::from_value(val).map_err(de::Error::custom)?;
-                    let entries = block
-                        .by_pattern
-                        .0
-                        .into_iter()
-                        .map(|(pattern, command)| PatternCommandEntry {
-                            pattern,
-                            command,
-                            description: block.description.clone(),
-                            timeout_seconds: block.timeout_seconds,
-                            test_filter: block.test_filter.clone(),
-                            scope_args_by_pattern: block.scope_args_by_pattern.clone(),
-                        })
-                        .collect();
-                    Ok(Self::Pattern(entries))
-                } else {
-                    let detailed: DetailedCommandDef =
-                        serde_yaml::from_value(val).map_err(de::Error::custom)?;
-                    Ok(Self::Detailed(Box::new(detailed)))
-                }
-            }
-            other => Err(de::Error::custom(format!(
-                "invalid command definition: {other:?}"
-            ))),
-        }
-    }
 }
 
 /// Built-in closed proof kinds admitted in `v2` profiles.

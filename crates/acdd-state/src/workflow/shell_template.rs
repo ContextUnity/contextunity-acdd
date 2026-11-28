@@ -1,7 +1,7 @@
 //! Canonical POSIX shell template validation, quoting, and placeholder expansion.
 
 use super::schema::TestFilterConfig;
-use acdd_core::errors::{ErrorCode, AcddError};
+use acdd_core::errors::{AcddError, ErrorCode};
 use acdd_core::path_policy::glob_matches;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -508,4 +508,191 @@ pub fn render_command_with_scope_target(
             .map(|arg| format!("{base} {arg}"))
             .collect())
     }
+}
+
+impl<'de> serde::Deserialize<'de> for super::schema::CommandDef {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use super::schema::{DetailedCommandDef, PatternCommandEntry};
+        use serde::de::{self, MapAccess, Visitor};
+        use std::fmt;
+
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct UnboundRepr {
+            unbound: bool,
+            #[serde(default)]
+            description: Option<String>,
+        }
+
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct PatternMapBlock {
+            by_pattern: ByPatternPairs,
+            #[serde(default)]
+            post_command: Option<String>,
+            #[serde(default)]
+            description: Option<String>,
+            #[serde(default)]
+            timeout_seconds: Option<u64>,
+            #[serde(default)]
+            test_filter: Option<TestFilterConfig>,
+            #[serde(default)]
+            scope_args_by_pattern: BTreeMap<String, String>,
+        }
+
+        struct ByPatternPairs(Vec<(String, String)>);
+
+        impl<'de> serde::Deserialize<'de> for ByPatternPairs {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                struct PairsVisitor;
+                impl<'de> Visitor<'de> for PairsVisitor {
+                    type Value = ByPatternPairs;
+
+                    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                        f.write_str("an ordered mapping of glob pattern to command string")
+                    }
+
+                    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+                    where
+                        A: MapAccess<'de>,
+                    {
+                        let mut out = Vec::new();
+                        while let Some((k, v)) = map.next_entry::<String, String>()? {
+                            out.push((k, v));
+                        }
+                        Ok(ByPatternPairs(out))
+                    }
+                }
+                deserializer.deserialize_map(PairsVisitor)
+            }
+        }
+
+        let val = serde_yaml::Value::deserialize(deserializer)?;
+        match &val {
+            serde_yaml::Value::String(s) => Ok(Self::Script(s.clone())),
+            serde_yaml::Value::Sequence(_) => {
+                let entries: Vec<PatternCommandEntry> =
+                    serde_yaml::from_value(val).map_err(de::Error::custom)?;
+                Ok(Self::Pattern(entries))
+            }
+            serde_yaml::Value::Mapping(map) => {
+                let has_unbound = map.contains_key(serde_yaml::Value::String("unbound".into()));
+                let has_by_pattern =
+                    map.contains_key(serde_yaml::Value::String("by_pattern".into()));
+                if has_unbound {
+                    let u: UnboundRepr = serde_yaml::from_value(val).map_err(de::Error::custom)?;
+                    if !u.unbound {
+                        return Err(de::Error::custom(
+                            "unbound command slot must set 'unbound: true' or provide a command",
+                        ));
+                    }
+                    Ok(Self::Unbound {
+                        unbound: u.unbound,
+                        description: u.description,
+                    })
+                } else if has_by_pattern {
+                    let block: PatternMapBlock =
+                        serde_yaml::from_value(val).map_err(de::Error::custom)?;
+                    let mut entries: Vec<PatternCommandEntry> = block
+                        .by_pattern
+                        .0
+                        .into_iter()
+                        .map(|(pattern, command)| PatternCommandEntry {
+                            pattern,
+                            command,
+                            description: block.description.clone(),
+                            timeout_seconds: block.timeout_seconds,
+                            test_filter: block.test_filter.clone(),
+                            scope_args_by_pattern: block.scope_args_by_pattern.clone(),
+                            post_always: false,
+                        })
+                        .collect();
+                    if let Some(post_cmd) = block.post_command {
+                        if !post_cmd.trim().is_empty() {
+                            entries.push(PatternCommandEntry {
+                                pattern: "**".to_owned(),
+                                command: post_cmd,
+                                description: block.description.clone(),
+                                timeout_seconds: block.timeout_seconds,
+                                test_filter: None,
+                                scope_args_by_pattern: BTreeMap::new(),
+                                post_always: true,
+                            });
+                        }
+                    }
+                    Ok(Self::Pattern(entries))
+                } else {
+                    let detailed: DetailedCommandDef =
+                        serde_yaml::from_value(val).map_err(de::Error::custom)?;
+                    Ok(Self::Detailed(Box::new(detailed)))
+                }
+            }
+            other => Err(de::Error::custom(format!(
+                "invalid command definition: {other:?}"
+            ))),
+        }
+    }
+}
+
+/// Resolve all `guidance` items on a `GateDef` against `profile.guidance`, enforcing the mandatory budget cap.
+pub fn resolve_and_budget_guidance(
+    profile: &super::schema::ResolvedWorkflow,
+    gate: &super::schema::GateDef,
+    contract_bytes: usize,
+    response_max_bytes: usize,
+) -> Result<Vec<String>, AcddError> {
+    use super::schema::GateGuidanceRef;
+    let mut rendered = Vec::with_capacity(gate.guidance.len());
+    let mut guidance_bytes = 0usize;
+    for item in &gate.guidance {
+        let text = match item {
+            GateGuidanceRef::Slot(slot) => profile
+                .guidance
+                .get(slot)
+                .ok_or_else(|| {
+                    AcddError::new(
+                        ErrorCode::UnknownGuidanceSlot,
+                        format!("gate '{}': unknown guidance slot '{slot}'", gate.id),
+                    )
+                })?
+                .render(),
+            GateGuidanceRef::Inline(inline) => inline.inline.clone(),
+        };
+        guidance_bytes += text.len();
+        rendered.push(text);
+    }
+    check_guidance_budget(
+        contract_bytes,
+        guidance_bytes,
+        &profile.limits,
+        response_max_bytes,
+    )?;
+    Ok(rendered)
+}
+
+/// Enforce the fail-closed mandatory `contract + guidance` byte reservation cap.
+pub fn check_guidance_budget(
+    contract_bytes: usize,
+    guidance_bytes: usize,
+    limits: &super::schema::ResourceLimits,
+    response_max_bytes: usize,
+) -> Result<usize, AcddError> {
+    let total = contract_bytes.saturating_add(guidance_bytes);
+    let cap = limits.max_guidance_bytes.min(response_max_bytes);
+    if total > cap {
+        return Err(AcddError::new(
+            ErrorCode::GuidanceBudgetExceeded,
+            format!(
+                "mandatory contract + guidance ({total} bytes) exceeds reserved budget ({cap} bytes)"
+            ),
+        )
+        .with_hint("Reduce inline guidance or task spec/invariants size so mandatory instructions fit without truncation"));
+    }
+    Ok(cap - total)
 }

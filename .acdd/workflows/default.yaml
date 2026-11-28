@@ -5,9 +5,10 @@ tags: [default, docs]
 commands:
   rust-check-and-test: &build_check_cmd
     by_pattern:
-      "crates/acdd-index/src/languages/**": "cargo clippy --package acdd-index --lib --all-features -- -D warnings && cargo clippy --test languages --test linker --all-features -- -D warnings && cargo test --package acdd-index --lib && cargo test --test languages --test linker {test_filter} && cargo test --test commitment_integrity"
-      "crates/acdd-index/src/linker/**": "cargo clippy --package acdd-index --lib --all-features -- -D warnings && cargo clippy --test languages --test linker --all-features -- -D warnings && cargo test --package acdd-index --lib && cargo test --test languages --test linker {test_filter} && cargo test --test commitment_integrity"
-      "**": "cargo clippy {scope_target} --all-features -- -D warnings && cargo test {scope_target} {test_filter} && cargo test --test commitment_integrity"
+      "crates/acdd-index/src/languages/**": "cargo clippy --package acdd-index --lib --all-features -- -D warnings && cargo clippy --test languages --test linker --all-features -- -D warnings && cargo test --package acdd-index --lib && cargo test --test languages --test linker {test_filter}"
+      "crates/acdd-index/src/linker/**": "cargo clippy --package acdd-index --lib --all-features -- -D warnings && cargo clippy --test languages --test linker --all-features -- -D warnings && cargo test --package acdd-index --lib && cargo test --test languages --test linker {test_filter}"
+      "**": "cargo clippy {scope_target} --all-features -- -D warnings && cargo test {scope_target} {test_filter}"
+    post_command: "cargo test --test commitment_integrity"
     test_filter: "{test}"
     description: "Run strict Rust checks, the scoped test suite (including cross-package languages/linker suites), and commitment_integrity boundary fences."
 

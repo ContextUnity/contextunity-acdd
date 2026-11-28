@@ -298,6 +298,7 @@ fn command_pattern_specificity_and_test_filter_quoting_matrix() {
             test_filter: Some(TestFilterConfig::Template("--exact {test}".to_owned())),
             timeout_seconds: None,
             scope_args_by_pattern: BTreeMap::new(),
+            post_always: false,
         },
         PatternCommandEntry {
             pattern: "crates/acdd-state/src/*.rs".to_owned(),
@@ -306,6 +307,7 @@ fn command_pattern_specificity_and_test_filter_quoting_matrix() {
             test_filter: Some(TestFilterConfig::Template("--exact {test}".to_owned())),
             timeout_seconds: None,
             scope_args_by_pattern: BTreeMap::new(),
+            post_always: false,
         },
     ]);
     let picked = resolve_command_for_scope(

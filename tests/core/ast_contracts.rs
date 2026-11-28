@@ -250,7 +250,20 @@ pub fn method_b(y: Foo) {
     );
 
     let encoded = encode_facts(&typed).unwrap();
-    let decoded: TypedFacts = decode_facts(&encoded).unwrap();
+    let mut decoded: TypedFacts = decode_facts(&encoded).unwrap();
+    if let Some(skel_blob) = acdd_index::typed_facts::encode_statement_skeletons(&typed.facts) {
+        let skels = acdd_index::typed_facts::decode_statement_skeletons(&skel_blob).unwrap();
+        for (entry, (_, hashes)) in decoded
+            .facts
+            .statement_fingerprints
+            .iter_mut()
+            .zip(skels.iter())
+        {
+            for (stmt, &h) in entry.statements.iter_mut().zip(hashes.iter()) {
+                stmt.skeleton_hash = h;
+            }
+        }
+    }
     assert_eq!(
         decoded.facts.statement_fingerprints,
         typed.facts.statement_fingerprints

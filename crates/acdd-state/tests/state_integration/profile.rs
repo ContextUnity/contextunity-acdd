@@ -6,6 +6,7 @@ use acdd_core::ports::{
 };
 use acdd_core::schema::{AdditionalPropertiesDef, SchemaDef};
 use acdd_core::subsystems::SubsystemRegistry;
+use acdd_spec::materialize_ephemeral_goal_spec_with_options;
 use acdd_state::harness::RunHarness;
 use acdd_state::machine::claim::admit_claim;
 use acdd_state::machine::{
@@ -13,8 +14,6 @@ use acdd_state::machine::{
     ClaimInput, MachineSpecInput, MachineTaskSpec, SubmitEvaluation, SubmitInput,
     VerifyExecutionObservation, VerifyInput,
 };
-use acdd_spec::materialize_ephemeral_goal_spec_with_options;
-use acdd_state::workflow::{inherit::*, schema::*, shell_template::*, validate::*};
 use acdd_state::store::traits::StateBackend;
 use acdd_state::types::{
     CheckResultRecord, FindingItem, FindingSeverity, IsolationMode, NodeStatus,
@@ -23,6 +22,7 @@ use acdd_state::types::{
     ValidatedObservations, WorktreeLifecycle,
 };
 use acdd_state::usecases::lifecycle::to_machine_profile;
+use acdd_state::workflow::{inherit::*, schema::*, shell_template::*, validate::*};
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -333,9 +333,13 @@ fn embedded_profiles_resolve_and_validate_matrix() {
     );
 
     let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let repo_p =
-        resolve_workflow_ref_with_dirs(".acdd/workflows/default.yaml", Some(&repo_root), None, None)
-            .unwrap();
+    let repo_p = resolve_workflow_ref_with_dirs(
+        ".acdd/workflows/default.yaml",
+        Some(&repo_root),
+        None,
+        None,
+    )
+    .unwrap();
     let repo_plan = repo_p.dispatch_plan();
     let handoff = repo_plan.iter().find(|g| g.cursor == "handoff").unwrap();
     assert_eq!(handoff.role.as_deref(), Some("coordinator"));
@@ -372,8 +376,8 @@ fn embedded_profiles_resolve_and_validate_matrix() {
 
     let audit_raw =
         include_str!("../../../../skills/acdd/references/acdd-workflow-examples/audit.yaml");
-    let audit_p = resolve_workflow_from_str_with_dirs(audit_raw, "audit", None, None, None, None)
-        .unwrap();
+    let audit_p =
+        resolve_workflow_from_str_with_dirs(audit_raw, "audit", None, None, None, None).unwrap();
     assert_eq!(audit_p.git.isolation, IsolationMode::InPlace);
     assert_eq!(audit_p.git.worktrees, WorktreeLifecycle::Manual);
     assert_eq!(audit_p.save, SaveAction::None);
@@ -564,7 +568,11 @@ fn embedded_profiles_resolve_and_validate_matrix() {
             },
         )
         .unwrap_err();
-        assert_eq!(err.code, ErrorCode::DomainCapabilityUnavailable, "{label}: {err}");
+        assert_eq!(
+            err.code,
+            ErrorCode::DomainCapabilityUnavailable,
+            "{label}: {err}"
+        );
     }
 }
 
@@ -1106,8 +1114,9 @@ gates_patch:
     ];
 
     for &(label, yaml, rel_path) in bad_cases {
-        let err = resolve_workflow_from_str_with_dirs(yaml, label, rel_path, Some(root), None, None)
-            .expect_err("expected failure");
+        let err =
+            resolve_workflow_from_str_with_dirs(yaml, label, rel_path, Some(root), None, None)
+                .expect_err("expected failure");
         assert_eq!(err.code, ErrorCode::WorkflowSchemaInvalid, "{label}: {err}");
     }
 }
@@ -1123,6 +1132,7 @@ fn command_pattern_test_filter_and_budget_matrix() {
             timeout_seconds: None,
             test_filter: None,
             scope_args_by_pattern: BTreeMap::new(),
+            post_always: false,
         },
         PatternCommandEntry {
             pattern: "crates/acdd-state/**/*.rs".to_owned(),
@@ -1131,6 +1141,7 @@ fn command_pattern_test_filter_and_budget_matrix() {
             timeout_seconds: None,
             test_filter: Some(TestFilterConfig::Template("-- {test}".to_owned())),
             scope_args_by_pattern: BTreeMap::new(),
+            post_always: false,
         },
         PatternCommandEntry {
             pattern: "crates/*/*.rs".to_owned(),
@@ -1139,6 +1150,7 @@ fn command_pattern_test_filter_and_budget_matrix() {
             timeout_seconds: None,
             test_filter: None,
             scope_args_by_pattern: BTreeMap::new(),
+            post_always: false,
         },
         PatternCommandEntry {
             pattern: "crates/*/*.rs".to_owned(),
@@ -1147,6 +1159,7 @@ fn command_pattern_test_filter_and_budget_matrix() {
             timeout_seconds: None,
             test_filter: None,
             scope_args_by_pattern: BTreeMap::new(),
+            post_always: false,
         },
     ]);
 
@@ -1575,7 +1588,8 @@ fn v061_profile_purity_docs_strip_patches_and_scope_args_matrix() {
             None,
         )
         .unwrap();
-        let err = validate_workflow(&p_bad_prot, &WorkflowValidationOptions::default()).unwrap_err();
+        let err =
+            validate_workflow(&p_bad_prot, &WorkflowValidationOptions::default()).unwrap_err();
         assert_eq!(err.code, ErrorCode::WorkflowSchemaInvalid, "{bad_prot}");
     }
 
