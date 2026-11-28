@@ -126,7 +126,7 @@ impl<'a> StateRuntimeOverlay<'a> {
         let ws_canon = canonical_root(ws_path).unwrap_or_else(|_| ws_path.to_path_buf());
         let mut guard = self.cache.lock().expect("runtime overlay cache lock");
         if !guard.contains_key(&ws_canon) {
-            let db_path = if ws_canon == self.local_checkout {
+            let db_path = if ws_canon == self.local_checkout || ws_canon == self.local_primary {
                 self.local_db.clone()
             } else {
                 resolve_ws_context_canon(&ws_canon, Some((&self.local_primary, &self.local_db)))?.0
@@ -235,7 +235,15 @@ impl SpecRuntimeOverlay for StateRuntimeOverlay<'_> {
     ) -> Result<Option<RuntimeDepResolution>, AcddError> {
         self.with_ws_snapshot(ws_path, collections, |reader, snapshot| {
             let preloaded = snapshot.context();
-            resolve_tombstone_dep(ws_path, reader, run_sel, task_sel, dep_label, Some(&preloaded))
+            resolve_tombstone_dep(
+                ws_path,
+                collections,
+                reader,
+                run_sel,
+                task_sel,
+                dep_label,
+                Some(&preloaded),
+            )
         })
     }
 
@@ -307,6 +315,7 @@ impl SpecRuntimeOverlay for StateRuntimeOverlay<'_> {
                     spec_id: run.spec_id.clone(),
                     spec_path: run.spec_path.clone(),
                     worktree: run.worktree.clone(),
+                    branch: run.branch.clone(),
                     total_tasks,
                     completed_tasks,
                     active_gates,

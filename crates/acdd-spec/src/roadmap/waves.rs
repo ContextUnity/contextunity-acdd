@@ -12,7 +12,7 @@ type KahnWavesResult = (
 );
 
 pub(super) fn compute_unblocks_counts(
-    specs_by_id: &BTreeMap<String, SpecInfo>,
+    specs_by_id: &BTreeMap<&str, &SpecInfo>,
     forward_spec_edges: &BTreeMap<String, BTreeSet<String>>,
 ) -> BTreeMap<String, (usize, usize)> {
     let mut unblocks_counts = BTreeMap::new();
@@ -20,15 +20,15 @@ pub(super) fn compute_unblocks_counts(
         |node: &str, visited: &mut BTreeSet<String>, queue: &mut VecDeque<String>| {
             if let Some(children) = forward_spec_edges.get(node) {
                 for c in children {
-                    if visited.insert(c.clone()) {
+                    if specs_by_id.contains_key(c.as_str()) && visited.insert(c.clone()) {
                         queue.push_back(c.clone());
                     }
                 }
             }
         };
-    for spec_id in specs_by_id.keys() {
+    for &spec_id in specs_by_id.keys() {
         let mut visited = BTreeSet::new();
-        visited.insert(spec_id.clone());
+        visited.insert(spec_id.to_owned());
         let mut queue = VecDeque::new();
         enqueue_children(spec_id, &mut visited, &mut queue);
         while let Some(curr) = queue.pop_front() {
@@ -37,28 +37,32 @@ pub(super) fn compute_unblocks_counts(
         let spec_count = visited.len().saturating_sub(1);
         let task_count: usize = visited
             .iter()
-            .filter(|id| id.as_str() != spec_id.as_str())
-            .filter_map(|id| specs_by_id.get(id))
+            .filter(|id| id.as_str() != spec_id)
+            .filter_map(|id| specs_by_id.get(id.as_str()))
             .map(|s| s.doc.tasks.len())
             .sum();
-        unblocks_counts.insert(spec_id.clone(), (spec_count, task_count));
+        unblocks_counts.insert(spec_id.to_owned(), (spec_count, task_count));
     }
     unblocks_counts
 }
 
 pub(super) fn apply_spec_overlaps<'a>(
     entries: &mut [RoadmapSpecEntry],
-    info: impl Fn(&RoadmapSpecEntry) -> &'a SpecInfo,
+    info: impl Fn(&RoadmapSpecEntry) -> Option<&'a SpecInfo>,
 ) {
     let n = entries.len();
     for i in 0..n {
         let mut overlaps = BTreeSet::new();
-        let globs_i = &info(&entries[i]).effective_globs;
+        let Some(globs_i) = info(&entries[i]).map(|s| &s.effective_globs) else {
+            continue;
+        };
         for (j, other) in entries.iter().enumerate() {
             if i == j {
                 continue;
             }
-            let globs_j = &info(other).effective_globs;
+            let Some(globs_j) = info(other).map(|s| &s.effective_globs) else {
+                continue;
+            };
             if !globs_i.is_empty() && !globs_j.is_empty() && scopes_overlap(globs_i, globs_j) {
                 overlaps.insert(other.spec_id.clone());
             }
@@ -343,7 +347,8 @@ mod roadmap_graph_tests {
         .unwrap();
         SpecInfo {
             spec_id: id.to_owned(),
-            collection: "milestones".to_owned(),
+            effective_spec: "milestones".to_owned(),
+            roadmap_visible: true,
             path: format!("docs/milestones/{id}.md"),
             doc,
             checkout: PathBuf::new(),
@@ -441,7 +446,9 @@ mod roadmap_graph_tests {
             ("C".to_owned(), spec_info("C", 3)),
         ]);
         let forward = blockers(&[("A", &["B", "C"]), ("B", &["C"])]);
-        let counts = compute_unblocks_counts(&specs, &forward);
+        let spec_refs: BTreeMap<&str, &SpecInfo> =
+            specs.iter().map(|(k, v)| (k.as_str(), v)).collect();
+        let counts = compute_unblocks_counts(&spec_refs, &forward);
         assert_eq!(counts["A"], (2, 5));
         assert_eq!(counts["B"], (1, 3));
         assert_eq!(counts["C"], (0, 0));

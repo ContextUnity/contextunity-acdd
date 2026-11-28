@@ -166,6 +166,17 @@ fn bytes_to_path_exact(raw: &[u8]) -> Result<PathBuf> {
     }
 }
 
+fn strip_line_ending(bytes: &[u8]) -> &[u8] {
+    #[cfg(windows)]
+    let bytes = bytes.strip_suffix(b"\r\n").unwrap_or(bytes);
+    bytes.strip_suffix(b"\n").unwrap_or(bytes)
+}
+
+fn is_real_git_dir(root: &Path) -> bool {
+    std::fs::symlink_metadata(root.join(".git"))
+        .is_ok_and(|m| !m.file_type().is_symlink() && m.file_type().is_dir())
+}
+
 fn git_rev_parse_path_exact(worktree: &Path, flag: &str) -> Result<PathBuf> {
     let output = git_command(worktree, &["rev-parse", "--path-format=absolute", flag])?;
     if !output.status.success() {
@@ -174,14 +185,7 @@ fn git_rev_parse_path_exact(worktree: &Path, flag: &str) -> Result<PathBuf> {
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    #[cfg(windows)]
-    let bytes = output
-        .stdout
-        .strip_suffix(b"\r\n")
-        .or_else(|| output.stdout.strip_suffix(b"\n"))
-        .unwrap_or(&output.stdout);
-    #[cfg(not(windows))]
-    let bytes = output.stdout.strip_suffix(b"\n").unwrap_or(&output.stdout);
+    let bytes = strip_line_ending(&output.stdout);
     let path = bytes_to_path_exact(bytes)?;
     Ok(path.canonicalize().unwrap_or(path))
 }
@@ -198,18 +202,97 @@ fn git_toplevel_exact(worktree: &Path) -> Result<PathBuf> {
     git_rev_parse_path_exact(worktree, "--show-toplevel")
 }
 
+/// Canonical path, HEAD commit OID, and checked-out local branch for an owned Git worktree.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OwnedWorktreeInfo {
+    pub path: PathBuf,
+    pub head: Option<String>,
+    pub branch: Option<String>,
+}
+
 /// Lists all existing canonical worktree roots owned by the repository at `root`,
 /// preserving exact trailing whitespace and rejecting stale or foreign directories.
 pub fn list_owned_worktrees(root: &Path) -> Result<Vec<PathBuf>> {
-    Ok(list_owned_worktrees_with_heads(root)?
+    Ok(list_owned_worktrees_info(root)?
         .into_iter()
-        .map(|(path, _)| path)
+        .map(|info| info.path)
         .collect())
 }
 
-/// Lists owned worktrees together with the commit reported by Git for each checkout.
-pub fn list_owned_worktrees_with_heads(root: &Path) -> Result<Vec<(PathBuf, Option<String>)>> {
+fn verify_owned_worktree_registration(
+    canon_p: &Path,
+    expected_common: &Path,
+    verified_primary: Option<&Path>,
+    root: &Path,
+    porcelain_branch: Option<&str>,
+) -> bool {
+    if canon_p != root
+        && (git_toplevel_exact(canon_p).ok().as_deref() != Some(canon_p)
+            || git_common_dir(canon_p).ok().as_deref() != Some(expected_common))
+    {
+        return false;
+    }
+    let Ok(actual_git_dir) = git_rev_parse_path_exact(canon_p, "--git-dir") else {
+        return false;
+    };
+    if actual_git_dir == expected_common {
+        if !is_real_git_dir(canon_p) || verified_primary != Some(canon_p) {
+            return false;
+        }
+    } else {
+        if !std::fs::symlink_metadata(canon_p.join(".git"))
+            .is_ok_and(|m| !m.file_type().is_symlink() && m.file_type().is_file())
+        {
+            return false;
+        }
+        let Ok(raw_gitdir) = std::fs::read(actual_git_dir.join("gitdir")) else {
+            return false;
+        };
+        let Ok(gitdir_path) = bytes_to_path_exact(strip_line_ending(&raw_gitdir)) else {
+            return false;
+        };
+        let resolved = if gitdir_path.is_absolute() {
+            gitdir_path
+        } else {
+            actual_git_dir.join(gitdir_path)
+        };
+        let Some(registered_root) = resolved.parent() else {
+            return false;
+        };
+        if registered_root.canonicalize().ok().as_deref() != Some(canon_p) {
+            return false;
+        }
+    }
+    let Ok(sym_out) = git_command(canon_p, &["symbolic-ref", "--quiet", "HEAD"]) else {
+        return false;
+    };
+    let live_branch = match sym_out.status.code() {
+        Some(0) => {
+            let trimmed = strip_line_ending(&sym_out.stdout);
+            let Ok(ref_name) = std::str::from_utf8(trimmed) else {
+                return false;
+            };
+            let Some(branch) = ref_name
+                .strip_prefix("refs/heads/")
+                .filter(|name| !name.is_empty())
+            else {
+                return false;
+            };
+            Some(branch)
+        }
+        Some(1) => None,
+        _ => return false,
+    };
+    live_branch == porcelain_branch
+}
+
+/// Lists owned worktrees together with the commit OID and local branch reported by Git.
+pub fn list_owned_worktrees_info(root: &Path) -> Result<Vec<OwnedWorktreeInfo>> {
     let expected_common = git_common_dir(root)?;
+    let verified_primary = (is_real_git_dir(root)
+        || expected_common.file_name() == Some(std::ffi::OsStr::new(".git")))
+    .then(|| primary_worktree_root(root))
+    .flatten();
     let output = git_command(root, &["worktree", "list", "--porcelain", "-z"])?;
     if !output.status.success() {
         bail!(
@@ -224,33 +307,53 @@ pub fn list_owned_worktrees_with_heads(root: &Path) -> Result<Vec<(PathBuf, Opti
         let Some(raw_bytes) = rec.strip_prefix(b"worktree ") else {
             continue;
         };
+        let mut head = None;
+        let mut branch = None;
+        while let Some(attr) = records.peek() {
+            if attr.is_empty() || attr.starts_with(b"worktree ") {
+                break;
+            }
+            let attr = records.next().expect("peeked attribute");
+            if let Some(oid_bytes) = attr.strip_prefix(b"HEAD ") {
+                head = std::str::from_utf8(oid_bytes)
+                    .ok()
+                    .filter(|oid| {
+                        (oid.len() == 40 || oid.len() == 64)
+                            && oid.bytes().all(|b| b.is_ascii_hexdigit())
+                            && !oid.bytes().all(|b| b == b'0')
+                    })
+                    .map(str::to_owned);
+            } else if let Some(ref_bytes) = attr.strip_prefix(b"branch refs/heads/") {
+                branch = std::str::from_utf8(ref_bytes)
+                    .ok()
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned);
+            }
+        }
         let Ok(p) = bytes_to_path_exact(raw_bytes) else {
             continue;
         };
-        if !p.is_dir() {
+        if std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink()) || !p.is_dir() {
             continue;
         }
         let Ok(canon_p) = p.canonicalize() else {
             continue;
         };
-        if canon_p != root
-            && (git_toplevel_exact(&canon_p).ok().as_ref() != Some(&canon_p)
-                || git_common_dir(&canon_p).ok().as_ref() != Some(&expected_common))
-        {
+        if !verify_owned_worktree_registration(
+            &canon_p,
+            &expected_common,
+            verified_primary.as_deref(),
+            root,
+            branch.as_deref(),
+        ) {
             continue;
         }
         if seen.insert(canon_p.clone()) {
-            let head = records
-                .peek()
-                .and_then(|record| record.strip_prefix(b"HEAD "))
-                .and_then(|oid| std::str::from_utf8(oid).ok())
-                .filter(|oid| {
-                    (oid.len() == 40 || oid.len() == 64)
-                        && oid.bytes().all(|b| b.is_ascii_hexdigit())
-                        && !oid.bytes().all(|b| b == b'0')
-                })
-                .map(str::to_owned);
-            out.push((canon_p, head));
+            out.push(OwnedWorktreeInfo {
+                path: canon_p,
+                head,
+                branch,
+            });
         }
     }
     Ok(out)
@@ -258,7 +361,7 @@ pub fn list_owned_worktrees_with_heads(root: &Path) -> Result<Vec<(PathBuf, Opti
 
 /// Resolves the primary worktree root for a repository or linked worktree.
 pub fn primary_worktree_root(root: &Path) -> Option<PathBuf> {
-    if root.join(".git").is_dir() {
+    if is_real_git_dir(root) {
         return root.canonicalize().ok();
     }
     if !root.join(".git").exists() {
@@ -1230,12 +1333,16 @@ mod tests {
         assert_eq!(primary_worktree_root(&wt), Some(can_repo.clone()));
         assert_eq!(primary_worktree_root(&orphan), Some(can_repo.clone()));
         assert_eq!(primary_worktree_root(&base), None);
-        let wt_heads = list_owned_worktrees_with_heads(&repo).unwrap();
-        assert!(wt_heads.iter().any(|(p, h)| p == &can_repo && h.is_some()));
-        assert!(wt_heads.iter().any(|(p, h)| p == &can_wt && h.is_some()));
-        assert!(wt_heads
+        let wt_info = list_owned_worktrees_info(&repo).unwrap();
+        assert!(wt_info
             .iter()
-            .any(|(p, h)| p == &can_orphan && h.is_none()));
+            .any(|w| w.path == can_repo && w.head.is_some()));
+        assert!(wt_info
+            .iter()
+            .any(|w| w.path == can_wt && w.head.is_some() && w.branch.as_deref() == Some("wt-branch")));
+        assert!(wt_info
+            .iter()
+            .any(|w| w.path == can_orphan && w.head.is_none() && w.branch.as_deref() == Some("orphan-wt")));
 
         let hashed =
             run_git_stdout(&repo, &["hash-object", "--stdin"], None, &[], Some(b"hi\n")).unwrap();
@@ -1469,6 +1576,240 @@ mod tests {
             assert!(
                 diff_worktree_file_against_rev(&repo, "HEAD", invalid, 3).is_err(),
                 "expected invalid delta path '{invalid:?}' to error"
+            );
+        }
+    }
+
+    #[test]
+    fn list_owned_worktrees_info_rejects_swapped_worktrees() {
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!(
+            "acdd-git-swap-test-{}-{unique}",
+            std::process::id()
+        ));
+        let _cleanup = Cleanup(base.clone());
+        let repo = base.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        assert!(git_status(&repo, &["init", "-b", "main"]).unwrap().success());
+        assert!(git_status(&repo, &["config", "user.name", "Test"])
+            .unwrap()
+            .success());
+        assert!(git_status(&repo, &["config", "user.email", "test@example.com"])
+            .unwrap()
+            .success());
+        assert!(git_status(&repo, &["config", "commit.gpgsign", "false"])
+            .unwrap()
+            .success());
+        std::fs::write(repo.join("README.md"), "root\n").unwrap();
+        assert!(git_status(&repo, &["add", "."]).unwrap().success());
+        assert!(git_status(&repo, &["commit", "-m", "init"])
+            .unwrap()
+            .success());
+
+        let wt_a = base.join("wt-a");
+        let wt_b = base.join("wt-b");
+        let wt_detached = base.join("wt-detached");
+        assert!(git_status(
+            &repo,
+            &["worktree", "add", "-b", "branch-a", wt_a.to_str().unwrap()]
+        )
+        .unwrap()
+        .success());
+        assert!(git_status(
+            &repo,
+            &["worktree", "add", "-b", "branch-b", wt_b.to_str().unwrap()]
+        )
+        .unwrap()
+        .success());
+        assert!(git_status(
+            &repo,
+            &["worktree", "add", "--detach", wt_detached.to_str().unwrap()]
+        )
+        .unwrap()
+        .success());
+
+        let repo_canon = repo.canonicalize().unwrap();
+        let wt_a_canon = wt_a.canonicalize().unwrap();
+        let wt_b_canon = wt_b.canonicalize().unwrap();
+        let wt_detached_canon = wt_detached.canonicalize().unwrap();
+
+        let listed = list_owned_worktrees_info(&repo_canon).unwrap();
+        let by_path: std::collections::BTreeMap<_, _> = listed
+            .iter()
+            .map(|info| (info.path.clone(), info.branch.clone()))
+            .collect();
+        assert_eq!(by_path.get(&repo_canon), Some(&Some("main".to_owned())));
+        assert_eq!(by_path.get(&wt_a_canon), Some(&Some("branch-a".to_owned())));
+        assert_eq!(by_path.get(&wt_b_canon), Some(&Some("branch-b".to_owned())));
+        assert_eq!(by_path.get(&wt_detached_canon), Some(&None));
+
+        // Git-accepted tab whitespace in HEAD (`ref:\trefs/heads/<branch>`) remains owned.
+        let wt_a_git_dir = git_rev_parse_path_exact(&wt_a_canon, "--git-dir").unwrap();
+        std::fs::write(wt_a_git_dir.join("HEAD"), b"ref:\trefs/heads/branch-a\n").unwrap();
+        let tab_listed = list_owned_worktrees_info(&repo_canon).unwrap();
+        let tab_branch = tab_listed
+            .iter()
+            .find(|info| info.path == wt_a_canon)
+            .and_then(|info| info.branch.as_deref());
+        assert_eq!(
+            tab_branch,
+            Some("branch-a"),
+            "tab-delimited HEAD symbolic ref must stay owned"
+        );
+
+        // Swapping wt_a and wt_b on disk leaves Git's .git/worktrees/*/gitdir stale.
+        let swap_tmp = base.join("wt-swap-tmp");
+        std::fs::rename(&wt_a, &swap_tmp).unwrap();
+        std::fs::rename(&wt_b, &wt_a).unwrap();
+        std::fs::rename(&swap_tmp, &wt_b).unwrap();
+
+        for query_root in [&repo_canon, &wt_a_canon, &wt_b_canon] {
+            let after_swap = list_owned_worktrees_info(query_root).unwrap();
+            let paths: std::collections::BTreeSet<_> =
+                after_swap.into_iter().map(|info| info.path).collect();
+            assert!(
+                paths.contains(&repo_canon),
+                "primary root must remain listed from {}",
+                query_root.display()
+            );
+            assert!(
+                paths.contains(&wt_detached_canon),
+                "unswapped detached worktree must remain listed from {}",
+                query_root.display()
+            );
+            assert!(
+                !paths.contains(&wt_a_canon) && !paths.contains(&wt_b_canon),
+                "swapped worktrees must be excluded from {}: {paths:?}",
+                query_root.display()
+            );
+        }
+
+        // Detached linked checkout whose `.git` file is repointed to `<primary>/.git`
+        // must be rejected while intact detached checkout stays present.
+        let wt_alias = base.join("wt-detached-alias");
+        assert!(git_status(
+            &repo,
+            &["worktree", "add", "--detach", wt_alias.to_str().unwrap()]
+        )
+        .unwrap()
+        .success());
+        let wt_alias_canon = wt_alias.canonicalize().unwrap();
+        assert!(git_status(&repo, &["checkout", "--detach", "HEAD"])
+            .unwrap()
+            .success());
+        let primary_git = repo_canon.join(".git");
+        std::fs::write(
+            wt_alias_canon.join(".git"),
+            format!("gitdir: {}\n", primary_git.display()),
+        )
+        .unwrap();
+        let after_alias: std::collections::BTreeSet<_> = list_owned_worktrees_info(&repo_canon)
+            .unwrap()
+            .into_iter()
+            .map(|info| info.path)
+            .collect();
+        assert!(after_alias.contains(&repo_canon));
+        assert!(after_alias.contains(&wt_detached_canon));
+        assert!(
+            !after_alias.contains(&wt_alias_canon),
+            "linked checkout repointed to primary .git must be rejected: {after_alias:?}"
+        );
+
+        // Replacing linked checkout `.git` with a symlink to `<primary>/.git` must not
+        // misidentify the linked checkout as primary or pass `list_owned_worktrees_info`.
+        #[cfg(unix)]
+        {
+            std::fs::remove_file(wt_alias_canon.join(".git")).unwrap();
+            std::os::unix::fs::symlink(&primary_git, wt_alias_canon.join(".git")).unwrap();
+            assert_eq!(
+                primary_worktree_root(&wt_alias_canon),
+                Some(repo_canon.clone()),
+                "symlinked .git dir must resolve to primary root, not linked checkout"
+            );
+            let after_symlink: std::collections::BTreeSet<_> =
+                list_owned_worktrees_info(&repo_canon)
+                    .unwrap()
+                    .into_iter()
+                    .map(|info| info.path)
+                    .collect();
+            assert!(after_symlink.contains(&repo_canon));
+            assert!(after_symlink.contains(&wt_detached_canon));
+            assert!(
+                !after_symlink.contains(&wt_alias_canon),
+                "linked checkout with symlinked .git to primary must be rejected: {after_symlink:?}"
+            );
+        }
+
+        // Trailing carriage return (`\r`) in Unix worktree directory name remains owned.
+        #[cfg(unix)]
+        {
+            let wt_cr_src = base.join("wt-cr-src");
+            assert!(git_status(
+                &repo,
+                &["worktree", "add", "--detach", wt_cr_src.to_str().unwrap()]
+            )
+            .unwrap()
+            .success());
+            let wt_cr_dst = base.join("wt-trailing-\r");
+            let mut move_cmd = std::process::Command::new("git");
+            move_cmd
+                .current_dir(&repo)
+                .arg("worktree")
+                .arg("move")
+                .arg(&wt_cr_src)
+                .arg(&wt_cr_dst);
+            assert!(move_cmd.status().unwrap().success());
+            let wt_cr_canon = wt_cr_dst.canonicalize().unwrap();
+            let after_cr: std::collections::BTreeSet<_> = list_owned_worktrees_info(&repo_canon)
+                .unwrap()
+                .into_iter()
+                .map(|info| info.path)
+                .collect();
+            assert!(
+                after_cr.contains(&wt_cr_canon),
+                "moved worktree ending in CR must remain owned: {after_cr:?}"
+            );
+        }
+
+        // Non-UTF-8 Unix worktree directory name (`0xFF`) remains owned after `git worktree move`.
+        // macOS APFS rejects non-UTF-8 filenames with EILSEQ.
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let wt_raw_src = base.join("wt-raw-src");
+            assert!(git_status(
+                &repo,
+                &["worktree", "add", "--detach", wt_raw_src.to_str().unwrap()]
+            )
+            .unwrap()
+            .success());
+            let wt_raw_dst = base.join(std::ffi::OsStr::from_bytes(b"wt-nonutf8-\xff"));
+            let mut move_cmd = std::process::Command::new("git");
+            move_cmd
+                .current_dir(&repo)
+                .arg("worktree")
+                .arg("move")
+                .arg(&wt_raw_src)
+                .arg(&wt_raw_dst);
+            assert!(move_cmd.status().unwrap().success());
+            let wt_raw_canon = wt_raw_dst.canonicalize().unwrap();
+            let after_move: std::collections::BTreeSet<_> = list_owned_worktrees_info(&repo_canon)
+                .unwrap()
+                .into_iter()
+                .map(|info| info.path)
+                .collect();
+            assert!(
+                after_move.contains(&wt_raw_canon),
+                "non-UTF-8 moved worktree must remain owned: {after_move:?}"
             );
         }
     }

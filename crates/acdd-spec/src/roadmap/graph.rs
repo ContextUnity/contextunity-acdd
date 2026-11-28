@@ -203,7 +203,11 @@ pub(super) fn build_dependency_graph(
     let planned = discovered
         .specs_by_id
         .values()
-        .filter(|info| !active_runs_by_spec.contains_key(&info.spec_id))
+        .filter(|info| {
+            !active_runs_by_spec
+                .get(&info.spec_id)
+                .is_some_and(|runs| discovered.has_resolved_active_run(&info.spec_id, runs))
+        })
         .chain(
             discovered
                 .archived_by_id
@@ -213,18 +217,14 @@ pub(super) fn build_dependency_graph(
         .map(|info| (info, None));
     let active = active_runs_by_spec.iter().flat_map(|(id, runs)| {
         runs.iter().filter_map(move |run| {
-            let info = discovered
-                .specs_by_run
-                .get(&run.run_id)
-                .or_else(|| discovered.specs_by_id.get(id))?;
+            let info = discovered.active_run_spec(run, id)?;
             Some((info, Some(run)))
         })
     });
     for (info, run) in planned.chain(active) {
         let checkout_wt = run
             .filter(|_| !info.doc.depends_on.is_empty())
-            .and_then(|r| r.worktree.as_deref())
-            .and_then(|p| canonical_root(Path::new(p)).ok())
+            .and_then(|r| discovered.owning_checkout_for_run(r))
             .filter(|wt| {
                 canonical_root(config.worktree).ok().as_ref() != Some(wt)
                     && discovered.owned_worktrees.contains(wt)
@@ -232,7 +232,7 @@ pub(super) fn build_dependency_graph(
         let checkout_override = checkout_wt
             .as_deref()
             .map(|wt| -> Result<_, AcddError> {
-                let adapter = load_ws_adapter(wt)?;
+                let adapter = super::discovery::load_checkout_adapter_for_roadmap(wt, current_root)?;
                 let linked: BTreeMap<String, PathBuf> = adapter
                     .linked_workspaces
                     .into_iter()
@@ -333,13 +333,11 @@ fn record_active_blocks(
                 .or_default()
                 .insert(source_task.to_string());
         }
-        let run_wt = source
-            .worktree
-            .as_deref()
-            .map(|p| canonical_root(Path::new(p)).unwrap_or_else(|_| PathBuf::from(p)));
+        let run_wt = discovered.owning_checkout_for_run(source);
         let in_scope = !current_only
             || discovered.specs_by_run.contains_key(source_run)
-            || run_wt.as_deref().unwrap_or(root) == current_root;
+            || (source.worktree.is_none() && root == current_root)
+            || run_wt.as_deref() == Some(current_root);
         if !in_scope || !source.has_external_deps {
             continue;
         }
@@ -373,11 +371,12 @@ fn record_active_blocks(
             let scoped = (checkout.as_path() != Path::new(".")).then_some(checkout.as_path());
             let in_scope = |target: &RuntimeActiveRun| {
                 scoped.is_none_or(|checkout| {
-                    target
-                        .worktree
-                        .as_deref()
-                        .and_then(|path| canonical_root(Path::new(path)).ok())
-                        .is_some_and(|wt| wt == checkout)
+                    super::types::checkout_matches_run(
+                        target.worktree.as_deref(),
+                        target.branch.as_deref(),
+                        checkout,
+                        &discovered.worktree_branches,
+                    )
                 })
             };
             let selector = dep.target_selector.as_str();
@@ -495,14 +494,18 @@ fn record_reverse_block(
                     .insert(t_ref.to_owned());
             }
         }
-        ParsedDepSyntax::LocalSpec { spec_id, task_ref } => {
+        ParsedDepSyntax::LocalSpec {
+            spec_id,
+            task_ref,
+            item_ref,
+        } => {
             let label = match source_task_ref {
                 Some(t_ref) => format!("{source_spec_id}:{t_ref}"),
                 None => source_spec_id.to_owned(),
             };
-            if let Some(target_task) = task_ref {
+            if let Some(target_item) = task_ref.as_ref().or(item_ref.as_ref()) {
                 task_blocks
-                    .entry((spec_id.clone(), target_task.clone()))
+                    .entry((spec_id.clone(), target_item.clone()))
                     .or_default()
                     .insert(label.clone());
             }
@@ -593,7 +596,7 @@ impl DependencyGraphBuilder<'_> {
             self.root
         };
         let mut qualified = None;
-        let (spec_id, task_ref) = match parsed {
+        let (spec_id, mut task_ref, is_item_ref) = match parsed {
             ParsedDepSyntax::LocalTask(t_ref) => {
                 let completed = source
                     .doc
@@ -605,12 +608,23 @@ impl DependencyGraphBuilder<'_> {
                     None,
                 ));
             }
-            ParsedDepSyntax::LocalSpec { spec_id, task_ref } => (spec_id, task_ref),
+            ParsedDepSyntax::LocalSpec {
+                spec_id,
+                task_ref,
+                item_ref,
+            } => (
+                spec_id,
+                task_ref.as_deref().or(item_ref.as_deref()).map(str::to_owned),
+                item_ref.is_some(),
+            ),
             ParsedDepSyntax::LinkedSpec {
                 ws_alias,
                 spec_id,
                 task_ref,
+                item_ref,
             } => {
+                let is_item = item_ref.is_some();
+                let target_ref = task_ref.as_deref().or(item_ref.as_deref()).map(str::to_owned);
                 let key = (
                     source.checkout.clone(),
                     source.spec_id.clone(),
@@ -641,7 +655,7 @@ impl DependencyGraphBuilder<'_> {
                         raw,
                         ws_alias,
                         spec_id,
-                        task_ref.as_deref(),
+                        target_ref.as_deref(),
                         checkout,
                         self.overlay,
                         &mut self.linked_cache,
@@ -650,7 +664,7 @@ impl DependencyGraphBuilder<'_> {
                     return Ok((to_entry(outcome), None));
                 }
                 qualified = Some((checkout, ws_alias.as_str()));
-                (spec_id, task_ref)
+                (spec_id, target_ref, is_item)
             }
         };
         if let Some((checkout, alias)) = &qualified {
@@ -754,9 +768,11 @@ impl DependencyGraphBuilder<'_> {
                 .get(spec_id)
                 .is_some_and(|info| info.checkout == checkout);
         if local_vertex {
+            let taken = task_ref.take();
             *parsed = ParsedDepSyntax::LocalSpec {
                 spec_id: std::mem::take(spec_id),
-                task_ref: task_ref.take(),
+                task_ref: (!is_item_ref).then_some(taken.clone()).flatten(),
+                item_ref: is_item_ref.then_some(taken).flatten(),
             };
         }
         Ok((to_entry(map_dep_resolution(resolved)), active_target))
@@ -827,7 +843,10 @@ impl LinkedWsCache {
             Entry::Vacant(entry) => {
                 let collections = match local {
                     Some((root, collections)) if root == checkout => collections.clone(),
-                    Some(_) | None => load_ws_adapter(checkout)?.specs,
+                    Some((root, _)) => {
+                        super::discovery::load_checkout_adapter_for_roadmap(checkout, root)?.specs
+                    }
+                    None => load_ws_adapter(checkout)?.specs,
                 };
                 let scanned = scan_checkout_specs(
                     checkout,

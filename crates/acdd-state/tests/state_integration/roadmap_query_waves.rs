@@ -18,21 +18,16 @@ use tempfile::TempDir;
 
 fn plans_collection_cfg() -> SpecConfig {
     SpecConfig {
-        path: None,
         paths: vec!["docs/plans".to_owned()],
         prefixes: vec!["PLAN".to_owned()],
-        digits: 3,
-        workflow: None,
+        ..Default::default()
     }
 }
 
 fn ext_collection_cfg(path: &str) -> SpecConfig {
     SpecConfig {
         path: Some(path.to_owned()),
-        paths: Vec::new(),
-        prefixes: Vec::new(),
-        digits: 3,
-        workflow: None,
+        ..Default::default()
     }
 }
 
@@ -808,10 +803,7 @@ fn seam_roadmap_query_waves_confinement_and_escapes() {
         "ext".to_owned(),
         acdd_core::config::SpecConfig {
             path: Some("extensions/locked/*/docs".to_owned()),
-            paths: Vec::new(),
-            prefixes: Vec::new(),
-            digits: 3,
-            workflow: None,
+            ..Default::default()
         },
     );
     let glob_ro = StateQueryEngine::open_read_only(glob_cfg, adv_provider.clone()).unwrap();

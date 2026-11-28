@@ -52,6 +52,27 @@ impl From<CliOutputFormat> for OutputFormat {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+/// ANSI color policy override for `acdd roadmap --color`.
+pub enum CliColorMode {
+    /// Enable ANSI colors when stdout is a TTY and `NO_COLOR` is unset.
+    Auto,
+    /// Always emit ANSI colors (overrides `NO_COLOR` and `acdd.yaml`).
+    Always,
+    /// Never emit ANSI escape sequences.
+    Never,
+}
+
+impl From<CliColorMode> for acdd_core::config::schema::RoadmapColorMode {
+    fn from(value: CliColorMode) -> Self {
+        match value {
+            CliColorMode::Auto => Self::Auto,
+            CliColorMode::Always => Self::Always,
+            CliColorMode::Never => Self::Never,
+        }
+    }
+}
+
 #[derive(Subcommand, Debug)]
 /// Flat `0.6.0` CLI subcommand surface.
 pub enum Command {
@@ -86,10 +107,11 @@ pub enum Command {
         #[arg(long)]
         force: bool,
     },
-    /// Start a new `Run` from a spec file or ephemeral `--goal`.
+    /// Start a new `Run` from 0..N specs or ephemeral `--goal`.
     Start {
-        /// Workspace-relative spec Markdown path (mutually exclusive with `--goal`).
-        spec: Option<String>,
+        /// Workspace-relative spec paths or spec IDs (`specs[0]` primary, remaining attached; mutually exclusive with `--goal`).
+        #[arg(value_name = "SPEC")]
+        specs: Vec<String>,
         /// Ephemeral goal text materializing `.acdd/run/<run_id>/spec.md`.
         #[arg(long)]
         goal: Option<String>,
@@ -193,9 +215,24 @@ pub enum Command {
     Roadmap {
         /// Optional spec ID filter / drill-down selector.
         spec_id: Option<String>,
-        /// Optional spec configuration display filter.
+        /// Optional spec configuration display filter (overrides `roadmap: false` for that collection).
         #[arg(long)]
         spec: Option<String>,
+        /// Include collections configured with `roadmap: false` (e.g. `memories`).
+        #[arg(long)]
+        all: bool,
+        /// Filter specs matching every specified tag (repeatable).
+        #[arg(long = "tag", value_name = "TAG")]
+        tag: Vec<String>,
+        /// Filter specs matching `key=value` schema or core fields (repeatable).
+        #[arg(long = "field", value_name = "KEY=VALUE")]
+        field: Vec<String>,
+        /// Override grouping axis (`wave`, `spec`, or custom schema field name).
+        #[arg(long = "group-by", value_name = "AXIS")]
+        group_by: Option<String>,
+        /// Override ANSI color output (`auto`, `always`, `never`).
+        #[arg(long, value_enum, value_name = "MODE")]
+        color: Option<CliColorMode>,
         /// Show only Wave 0 ready specs.
         #[arg(long)]
         ready: bool,

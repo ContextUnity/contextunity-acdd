@@ -23,6 +23,7 @@ pub(crate) use presentation::{
     PresentationOptions,
 };
 pub use presentation::{compact, render_for_operation};
+pub use roadmap::{render_roadmap_markdown_with_options, RoadmapRenderOptions};
 
 #[cfg(test)]
 mod tests {

@@ -31,11 +31,37 @@ pub(super) struct CliStateCtx<'a> {
     pub root_from_cli: bool,
     pub run_from_cli: bool,
     pub explicit_config: bool,
+    pub stdout_is_tty: bool,
     pub state_db: Option<&'a Path>,
     pub code_db: Option<&'a Path>,
     pub adapter: &'a acdd_core::config::Adapter,
     pub output_format: OutputFormat,
     pub title: &'a str,
+}
+
+pub(crate) fn resolve_ansi_color(
+    cli_color: Option<acdd_core::config::schema::RoadmapColorMode>,
+    no_color_active: bool,
+    stdout_is_tty: bool,
+    config_color: acdd_core::config::schema::RoadmapColorMode,
+) -> bool {
+    use acdd_core::config::schema::RoadmapColorMode;
+    match cli_color {
+        Some(RoadmapColorMode::Always) => true,
+        Some(RoadmapColorMode::Never) => false,
+        Some(RoadmapColorMode::Auto) => !no_color_active && stdout_is_tty,
+        None => {
+            if no_color_active {
+                false
+            } else {
+                match config_color {
+                    RoadmapColorMode::Always => true,
+                    RoadmapColorMode::Never => false,
+                    RoadmapColorMode::Auto => stdout_is_tty,
+                }
+            }
+        }
+    }
 }
 
 fn effective_run_selector(
@@ -128,6 +154,13 @@ impl CliStateCtx<'_> {
             format::render_state_query_markdown(&res, self.title, roadmap_detail)
         })
     }
+
+    fn render_roadmap(&self, resp: &acdd_state::usecases::RoadmapResp, detail: bool, opts: &format::RoadmapRenderOptions) -> Result<(Value, Option<String>)> {
+        let wrapped = acdd_state::usecases::StateQueryOutput::Roadmap(Box::new(resp.clone()));
+        render_cli_state_output(&wrapped, self.output_format, self.adapter.debug, || {
+            format::render_roadmap_markdown_with_options(resp, detail, opts)
+        })
+    }
 }
 
 fn render_cli_state_output<T: serde::Serialize>(
@@ -176,7 +209,7 @@ pub(super) fn dispatch(
     let root = state_ctx.root;
     match command {
         Command::Start {
-            spec,
+            specs,
             goal,
             name,
             scope,
@@ -198,7 +231,8 @@ pub(super) fn dispatch(
                 path => path,
             };
             state_ctx.command(StateCommand::Start(StartReq {
-                spec_path: spec,
+                spec_path: specs.first().cloned(),
+                spec_paths: specs,
                 goal,
                 run_name,
                 workflow: explicit_workflow_ref
@@ -329,6 +363,11 @@ pub(super) fn dispatch(
         Command::Roadmap {
             spec_id,
             spec,
+            all,
+            tag,
+            field,
+            group_by,
+            color,
             ready,
             active,
             tasks,
@@ -344,20 +383,54 @@ pub(super) fn dispatch(
                 )
                 .into());
             }
+            let effective_group_by = group_by.or_else(|| state_ctx.adapter.roadmap.group_by.clone());
+            let no_color_active = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
+            let render_opts = format::RoadmapRenderOptions {
+                ansi_color: resolve_ansi_color(
+                    color.map(Into::into),
+                    no_color_active,
+                    state_ctx.stdout_is_tty,
+                    state_ctx.adapter.roadmap.color,
+                ),
+                group_by: effective_group_by.clone(),
+            };
             let req = RoadmapReq {
                 spec_id,
                 spec,
+                all,
+                tags: tag,
+                fields: field,
+                group_by: effective_group_by,
+                badges: state_ctx.adapter.roadmap.badges.clone(),
                 ready_only: ready,
                 active_only: active,
                 include_tasks: tasks,
                 ..Default::default()
             };
-            if state_ctx
+            let roadmap_detail = req.spec_id.is_some();
+            let resp = if state_ctx
                 .adapter
                 .modules
                 .is_subsystem_enabled(acdd_core::subsystems::SubsystemId::State)
             {
-                state_ctx.query(root, StateQuery::Roadmap(req))
+                let providers = build_domain_providers(
+                    state_ctx.root,
+                    state_ctx.adapter,
+                    state_ctx.code_db,
+                    Vec::new(),
+                )?;
+                match execute_state_query(
+                    root,
+                    root,
+                    state_ctx.state_db,
+                    state_ctx.code_db,
+                    state_ctx.adapter,
+                    providers,
+                    StateQuery::Roadmap(req),
+                )? {
+                    acdd_state::usecases::StateQueryOutput::Roadmap(resp) => *resp,
+                    other => anyhow::bail!("unexpected roadmap query output: {other:?}"),
+                }
             } else {
                 let primary = acdd_core::git::primary_worktree_root(root)
                     .unwrap_or_else(|| root.to_path_buf());
@@ -367,26 +440,19 @@ pub(super) fn dispatch(
                     .iter()
                     .map(|lw| (lw.name.clone(), lw.path.clone()))
                     .collect();
-                let roadmap_detail = req.spec_id.is_some();
                 let cfg = acdd_spec::roadmap::RoadmapConfig {
                     workspace_root: &primary,
                     worktree: root,
                     spec_collections: &state_ctx.adapter.specs,
                     linked_workspaces: &linked,
                 };
-                let resp = acdd_spec::roadmap::build_roadmap(
+                acdd_spec::roadmap::build_roadmap(
                     &cfg,
                     &acdd_spec::overlay::NoopRuntimeOverlay,
                     req,
-                )?;
-                let wrapped = acdd_state::usecases::StateQueryOutput::Roadmap(Box::new(resp));
-                render_cli_state_output(
-                    &wrapped,
-                    state_ctx.output_format,
-                    state_ctx.adapter.debug,
-                    || format::render_state_query_markdown(&wrapped, state_ctx.title, roadmap_detail),
-                )
-            }
+                )?
+            };
+            state_ctx.render_roadmap(&resp, roadmap_detail, &render_opts)
         }
         Command::Claim {
             node,
@@ -747,5 +813,34 @@ pub(super) fn dispatch(
             }
         }
         _ => unreachable!("non-state command routed to dispatch_state"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_ansi_color;
+    use acdd_core::config::schema::RoadmapColorMode;
+
+    #[test]
+    fn resolve_ansi_color_precedence_matrix() {
+        let cases = [
+            (Some(RoadmapColorMode::Always), true, false, RoadmapColorMode::Never, true),
+            (Some(RoadmapColorMode::Never), false, true, RoadmapColorMode::Always, false),
+            (Some(RoadmapColorMode::Auto), true, true, RoadmapColorMode::Always, false),
+            (Some(RoadmapColorMode::Auto), false, true, RoadmapColorMode::Never, true),
+            (Some(RoadmapColorMode::Auto), false, false, RoadmapColorMode::Always, false),
+            (None, true, true, RoadmapColorMode::Always, false),
+            (None, false, false, RoadmapColorMode::Always, true),
+            (None, false, true, RoadmapColorMode::Never, false),
+            (None, false, true, RoadmapColorMode::Auto, true),
+            (None, false, false, RoadmapColorMode::Auto, false),
+        ];
+        for (cli, no_color, tty, cfg, expected) in cases {
+            assert_eq!(
+                resolve_ansi_color(cli, no_color, tty, cfg),
+                expected,
+                "cli={cli:?} no_color={no_color} tty={tty} cfg={cfg:?}"
+            );
+        }
     }
 }

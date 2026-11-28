@@ -243,10 +243,8 @@ fn noop_runtime_overlay_and_static_spec_seams_never_touch_sqlite() {
         "milestones".to_owned(),
         SpecConfig {
             path: Some("docs/milestones".to_owned()),
-            paths: Vec::new(),
             prefixes: vec!["AC".to_owned()],
-            digits: 3,
-            workflow: None,
+            ..Default::default()
         },
     );
 
@@ -361,6 +359,7 @@ fn noop_runtime_overlay_and_static_spec_seams_never_touch_sqlite() {
                 spec_id: Some("AC-001".to_owned()),
                 spec_path: Some(drafted.spec_path.clone()),
                 worktree: Some(canon_root.to_string_lossy().into_owned()),
+                branch: None,
                 total_tasks: 1,
                 completed_tasks: 0,
                 active_gates: Vec::new(),
@@ -376,6 +375,7 @@ fn noop_runtime_overlay_and_static_spec_seams_never_touch_sqlite() {
                 spec_id: Some("AC-999".to_owned()),
                 spec_path: Some("docs/milestones/AC-999.md".to_owned()),
                 worktree: Some("/nonexistent/other-wt".to_owned()),
+                branch: None,
                 total_tasks: 1,
                 completed_tasks: 0,
                 active_gates: Vec::new(),

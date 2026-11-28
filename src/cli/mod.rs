@@ -172,6 +172,7 @@ fn write_output(output: &mut dyn io::Write, text: &str) -> Result<()> {
 struct CliRunSources {
     root_from_cli: bool,
     run_from_cli: bool,
+    stdout_is_tty: bool,
     env_workspace_root: Option<PathBuf>,
     env_worktree: Option<PathBuf>,
 }
@@ -202,6 +203,7 @@ pub async fn run_from_env() -> Result<()> {
     let sources = CliRunSources {
         root_from_cli,
         run_from_cli,
+        stdout_is_tty: std::io::IsTerminal::is_terminal(&io::stdout()),
         env_workspace_root: (!root_from_cli)
             .then(|| non_empty_env_path("ACDD_WORKSPACE_ROOT"))
             .flatten(),
@@ -447,10 +449,10 @@ impl Cli {
 
         let workflow_at_root = match &self.command {
             Some(Command::Start {
-                spec: Some(_),
+                specs,
                 worktree_path: Some(_),
                 ..
-            }) => None,
+            }) if !specs.is_empty() => None,
             _ => self.workflow.as_deref(),
         };
         let settings =
@@ -478,6 +480,7 @@ impl Cli {
             effective_root.as_deref(),
             sources.root_from_cli,
             sources.run_from_cli,
+            sources.stdout_is_tty,
             settings,
             database,
             state_db,
@@ -496,6 +499,7 @@ impl Cli {
         effective_root: Option<&Path>,
         root_from_cli: bool,
         run_from_cli: bool,
+        stdout_is_tty: bool,
         settings: paths::ResolvedPaths,
         db: PathBuf,
         state_db: Option<PathBuf>,
@@ -572,6 +576,7 @@ impl Cli {
             root_from_cli,
             run_from_cli,
             explicit_config: self.config.is_some(),
+            stdout_is_tty,
             state_db: state_db.as_deref(),
             code_db: Some(db.as_path()),
             adapter: &adapter,
@@ -764,6 +769,7 @@ mod tests {
         // 2. Flat CLI subcommand parsing preserves Cli/Command AST & removes legacy trees
         for args in [
             vec!["acdd", "init"],
+            vec!["acdd", "start", "AUD-001", "AC-006"],
             vec!["acdd", "start", "--goal", "ship feature", "--name", "m1"],
             vec![
                 "acdd",

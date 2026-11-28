@@ -189,6 +189,21 @@ pub struct RoadmapReq {
     /// Optional spec key display filter applied after building the full cross-spec DAG.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spec: Option<String>,
+    /// Include collections configured with `roadmap: false` (`--all`).
+    #[serde(default)]
+    pub all: bool,
+    /// Filter specs matching every specified tag (`--tag`, repeatable).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// Filter specs matching every `key=value` predicate (`--field`, repeatable).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<String>,
+    /// Optional grouping axis (`wave`, `spec`, or custom schema field name).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_by: Option<String>,
+    /// Ordered badge field/readiness keys projected onto each [`RoadmapSpecEntry`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub badges: Vec<String>,
     /// Show only Wave 0 ready specs.
     #[serde(default)]
     pub ready_only: bool,
@@ -204,6 +219,24 @@ pub struct RoadmapReq {
     /// Restrict spec discovery strictly to the current workspace/worktree (`--current`).
     #[serde(default)]
     pub current_only: bool,
+}
+
+/// Key-value badge projected onto a [`RoadmapSpecEntry`] from `acdd.yaml` `roadmap.badges`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RoadmapBadge {
+    /// Badge key (schema field name or `"readiness"`).
+    pub name: String,
+    /// Formatted scalar or comma-joined value.
+    pub value: String,
+}
+
+/// Grouped spec bucket populated when `RoadmapReq::group_by` selects a non-`"wave"` axis.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RoadmapGroup {
+    /// Group bucket label (e.g. `"high"`, `"milestones"`, or `"(none)"`).
+    pub group: String,
+    /// Specs belonging to this group.
+    pub specs: Vec<RoadmapSpecEntry>,
 }
 
 /// Worktree copy summary when a spec diverges across Git worktrees.
@@ -318,6 +351,9 @@ pub struct RoadmapSpecEntry {
     /// Reverse dependencies (`<spec_id>` or `<spec_id>:<task_ref>`) blocked by this spec.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blocks: Vec<String>,
+    /// Configured display badges projected from `acdd.yaml` `roadmap.badges`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub badges: Vec<RoadmapBadge>,
     /// Task drill-down entries (populated when `spec_id` is requested or `include_tasks` is true).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tasks: Vec<RoadmapTaskEntry>,
@@ -347,6 +383,12 @@ pub struct RoadmapResp {
     /// Dependency cycles detected across planned specs (each inner `Vec` is an SCC).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cycles: Vec<Vec<String>>,
+    /// Effective grouping axis applied to this response (`wave`, `spec`, or field name).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_by: Option<String>,
+    /// Specs grouped by `group_by` when `group_by` is set to a non-`"wave"` axis.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<RoadmapGroup>,
     /// Non-fatal discovery or dependency parsing warnings.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,

@@ -93,6 +93,8 @@ pub struct RuntimeActiveRun {
     pub spec_path: Option<String>,
     /// Canonical or raw worktree path recorded on the run, if any.
     pub worktree: Option<String>,
+    /// Local Git branch recorded on the run, if any.
+    pub branch: Option<String>,
     /// Total task count on the run graph (`0` when no graph row exists).
     pub total_tasks: usize,
     /// Completed task count on the run graph.
