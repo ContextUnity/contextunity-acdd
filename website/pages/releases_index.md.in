@@ -1,0 +1,16 @@
+# Releases & Nightly Preview
+
+ContextUnity ACDD publishes two release channels:
+
+- **Stable (`latest`)** — tagged releases on `main` (currently `v0.7.1`), installed by default with `install.sh`.
+- **Nightly (`--nightly`)** — rolling pre-releases published automatically on every green push to `dev`, staging the upcoming 2-digit minor release (`v0.8`).
+
+Features available on `dev` ahead of the latest stable release are marked with <span class="badge-nightly">nightly</span> throughout this documentation.
+
+```bash
+# Install latest stable release
+curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-acdd/main/install.sh | sh
+
+# Install rolling nightly build from dev
+curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-acdd/main/install.sh | sh -s -- --nightly
+```

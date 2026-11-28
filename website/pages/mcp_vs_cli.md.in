@@ -3,7 +3,7 @@
 ContextUnity ACDD exposes **dual-surface parity**: every code-graph query, linter rule, reader mode, and state-machine transition runs over the exact same Rust engine whether called by an AI agent over **MCP (`acdd serve`)** or by a developer / CI pipeline via the **CLI (`acdd ...`)**.
 
 - **Default output**: structured Markdown on both surfaces (pass `format: "json"` in MCP or `--format json` on CLI for machine-parsed JSON).
-- **Subsystem presets**: configure `preset: full | index | spec | state | minimal` in `acdd.yaml` (`spec` enables `validate`/`roadmap`/`draft` and the 4 docs/core MCP tools with zero `.acdd/state.sqlite` creation; registry-local `modules.required` mismatches emit `ACDD_WORKFLOW_SCHEMA_INVALID` with `FEATURE_REQUIRED_BY_PRESET`, while cross-layer workspace preset mismatches emit `DOMAIN_CAPABILITY_UNAVAILABLE`).
+- **Subsystem presets**: configure `preset: full | index | spec | state | minimal` in `acdd.yaml` (`preset: spec` enables `validate`/`roadmap`/`draft` and the 4 docs/core MCP tools with zero `.acdd/state.sqlite` creation; registry-local `modules.required` mismatches emit `ACDD_WORKFLOW_SCHEMA_INVALID` with `FEATURE_REQUIRED_BY_PRESET`, while cross-layer workspace preset mismatches emit `DOMAIN_CAPABILITY_UNAVAILABLE`).
 - **Index freshness**: MCP automatically runs incremental `delta` / `build` when files change (with a 5s inventory check cache); CLI reads `.acdd/code-map.sqlite` directly (`acdd build` / `acdd delta` updates it).
 - **Worktree targeting**: MCP tools accept an optional `worktree` field on every call; CLI commands accept `-C <PATH>` (short alias for `--root <PATH>`), `ACDD_WORKTREE` / `ACDD_RUN` env fallbacks across both code/docs and state commands, plus `acdd exec [--run <id|name>] [--worker <id>] -- <program> [args...]` to run build/test/git commands directly inside the resolved worktree.
 
@@ -14,7 +14,7 @@ ContextUnity ACDD exposes **dual-surface parity**: every code-graph query, linte
 | Capability | MCP Tool | CLI Equivalent | Typical Input |
 | --- | --- | --- | --- |
 | **Workspace summary** | `code_map_overview` | `acdd query overview` | Optional `path` scope, `aspects: ["entrypoints", "topology"]` |
-| **Symbol search** | `code_map_search` | `acdd query search <pattern>` | `"parse*"`, `"takes:Config"`, `"returns:Result"` |
+| **Symbol search** | `code_map_search` | `acdd query search <pattern> [--path <dir>]` | `"parse*"`, `"takes:Config"`, `"returns:Result"` |
 | **Inspect declaration** | `code_map_inspect` | `acdd query inspect <selector>` | `"src/auth.rs:verify_token"`, `show_source: true` |
 | **Direct edges** | `code_map_explain` | `acdd query explain <selector>` | `direction: "incoming" \| "outgoing" \| "both"` |
 | **Blast radius / Git diff** | `code_map_impact` | `acdd query impact <selector>` | `selector` or `changes: "staged" \| "unstaged" \| "head"` |
@@ -29,9 +29,9 @@ ContextUnity ACDD exposes **dual-surface parity**: every code-graph query, linte
 
 | Capability | MCP Tool | CLI Equivalent | Typical Input |
 | --- | --- | --- | --- |
-| **Single-shot symbol / file read** | `acdd_read` | `acdd read <path>` | `selector: "SymbolName"`, `detail: "compact" \| "full"` (`<= 9,000` B inline / `48 KiB` full), or `mode: "search" \| "delta" \| "outline"` |
+| **Single-shot symbol / file read** | `acdd_read` | `acdd read [<path> \| --path <path>] [--selector <sym>]` | `selector: "SymbolName"`, `detail: "compact" \| "full"` (`<= 9,000` B inline / `48 KiB` full), or `mode: "search" \| "delta" \| "outline"` |
 | **Search Markdown sections** | `search_docs` | `acdd docs search <query>` | `doc_type: "architecture" \| "adr" \| "guide"`, `include_excerpt: true` |
-| **Read doc section & links** | `get_doc` | `acdd docs get <path>` | `section: "Heading Title"`, `detail: "compact" \| "full"` |
+| **Read doc section & links** | `get_doc` | `acdd docs get <path> [--detail compact\|full]` | `section: "Heading Title"`, `detail: "compact" \| "full"` |
 | **Verify all doc links** | *(via `code_map_lint`)* | `acdd docs check` | Checks relative Markdown links and `#heading` anchors |
 | **Interactive manual** | `acdd_guide` | `acdd guide [topic] [--mcp]` | Defaults to CLI-focused guidance across 11 topics (`query`, `init`, `adapter`, `validate`, `code`, `ast`, `docs`, `lifecycle`, `acdd`, `gates`, `subtasks`); pass `--mcp` for MCP guidance matching `acdd_guide` |
 

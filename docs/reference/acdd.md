@@ -1,11 +1,11 @@
 ---
-title: "Augmented Context & Durable Dispatch (ACDD)"
+title: "Augmented Context & Dispatch Discipline (ACDD)"
 doc_type: guide
 ---
 
-# Augmented Context & Durable Dispatch (ACDD)
+# Augmented Context & Dispatch Discipline (ACDD)
 
-**Augmented Context & Durable Dispatch (ACDD)** is ACDD's declarative lifecycle
+**Augmented Context & Dispatch Discipline (ACDD)** is ACDD's declarative lifecycle
 state machine (`crates/acdd-state`, `crates/acdd-spec`, and `crates/acdd-core`) for structured AI and
 human software engineering. Instead of letting coding agents run open-ended
 loops over an entire repository, ACDD binds Git-tracked specifications, SQLite

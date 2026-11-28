@@ -1,0 +1,109 @@
+version: 2
+# Universal workflow for syncing the documentation website (`website/`) with
+# rolling `nightly` features on `dev` and maintaining dedicated preview sections
+# for the upcoming 2-digit minor release (`vX.Y`).
+inherit: base
+
+git:
+  isolation: worktree
+  worktrees: manual
+
+save: commit
+
+tags:
+  - default
+  - docs
+
+commands:
+  website_check:
+    command: "./website/build.sh --check && cargo run -q -- docs check && cargo run -q -- validate"
+    description: "Sync docs into Zola, verify website build and internal links, and validate repo docs and workflows."
+    timeout_seconds: 300
+
+roles:
+  docs_editor:
+    mode: subagent
+  independent_reviewer:
+    mode: subagent
+
+guidance:
+  website.sync_nightly:
+    description: "SYNC WEBSITE WITH NIGHTLY FEATURES & NEXT 2-DIGIT MINOR RELEASE"
+    criteria:
+      - "Determine the latest stable `v*` tag (`git describe --tags --abbrev=0 --match 'v*'`), the upcoming 2-digit minor release `X.Y` (`website/config.toml` `extra.next_minor` and `ROADMAP.md`), and all changes since that tag (`git log <latest_tag>..HEAD --oneline`, `docs/milestones/`, `docs/reference/`, `crates/acdd-state/src/workflow/embedded/`, `skills/acdd/references/acdd-workflow-examples/`)."
+      - "Keep landing-page copy and core docs clean and scannable — do NOT scatter `nightly` badges throughout every section. Centralize all `nightly` items in ONE dedicated block inside the Roadmap section (`#coming-soon` in `website/templates/index.html`) plus the `/docs/releases/next/` preview page (`website/pages/next_release.md.in`)."
+      - "Maintain the Roadmap & Nightly section for the upcoming 2-digit minor release (`vX.Y` from `config.extra.next_minor`): keep `#coming-soon` split cleanly into 'Available now in Nightly' vs. 'Planned to complete vX.Y', and update `website/pages/next_release.md.in` (`/docs/releases/next/`). Past stable releases sync automatically from `CHANGELOG.md` (`/docs/releases/changelog/`)."
+      - "When cutting a stable release (`vX.Y.0`), bump `config.extra.version`, advance `config.extra.next_minor` to the next 2-digit minor line, clear shipped items from the Nightly block, and roll `website/pages/next_release.md.in` forward to the next minor line."
+      - "Verify `./website/build.sh --check`, `cargo run -q -- docs check`, and `cargo run -q -- validate` pass with zero broken links or stale identifiers (`rg -n` for renamed/removed flags, config keys, or workflows)."
+  website.review:
+    description: "INDEPENDENT REVIEW OF WEBSITE & NIGHTLY RELEASE SYNC"
+    criteria:
+      - "Verify `nightly` highlights stay centralized in the single Roadmap & Nightly block (`#coming-soon`) and `/docs/releases/next/`, without scattered `nightly` badge clutter across unrelated landing sections."
+      - "Verify the upcoming 2-digit minor release section (`config.extra.next_minor`) and `website/pages/next_release.md.in` accurately reflect `ROADMAP.md` and `docs/milestones/`, cleanly separating 'Available in Nightly' from 'Planned for vX.Y'."
+      - "Verify `./website/build.sh --check`, `docs check`, and `validate` succeed with zero broken links, orphan pages, or layout/theme regressions."
+  website.publish:
+    description: "FINALIZE & COMMIT REVIEWED WEBSITE UPDATE"
+    criteria:
+      - "Confirm working tree matches the reviewed `candidate_tree` and submit `publish` to create the atomic commit and prune the run."
+
+gates:
+  - id: update
+    role: docs_editor
+    command: website_check
+    scope:
+      - "website/**"
+      - "ROADMAP.md"
+      - "INSTALL.md"
+      - "docs/reference/**"
+      - "docs/runbooks/**"
+      - ".github/workflows/pages.yml"
+    checks:
+      - docs.links
+    guidance:
+      - website.sync_nightly
+      - core.execution
+      - hitl.pro
+    context:
+      - paths.instructions
+      - specs.memories
+    pass: review
+
+  - id: review
+    role: independent_reviewer
+    proof: review
+    contours:
+      - paths
+      - claims
+      - administration
+    independent_from:
+      - update
+    need:
+      - update
+    guidance:
+      - website.review
+      - core.review
+      - hitl.pro
+    context:
+      - paths.instructions
+      - specs.memories
+    save:
+      immutable: true
+    pass: publish
+    fail: update
+
+  - id: publish
+    role: independent_reviewer
+    independent_from:
+      - update
+    need:
+      - update
+      - review
+    receipt: true
+    guidance:
+      - website.publish
+      - hitl.pro
+    save:
+      immutable: true
+      post: commit
+      prune: true
+    fail: update

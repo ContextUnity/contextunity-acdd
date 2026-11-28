@@ -5,7 +5,7 @@
 [![MCP + CLI](https://img.shields.io/badge/surface-MCP%20%2B%20CLI-10b981.svg)](https://modelcontextprotocol.io)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**Augmented Context & Durable Dispatch (ACDD)** is a local-first, zero-daemon **meta-harness** for AI coding agents (Claude Code, Codex CLI, Antigravity, Cursor) and CI pipelines — packaged into a single pure-Rust binary.
+**Augmented Context & Dispatch Discipline (ACDD)** is a local-first, zero-daemon **meta-harness** for AI coding agents (Claude Code, Codex CLI, Antigravity, Cursor) and CI pipelines — packaged into a single pure-Rust binary.
 
 One executable (`acdd`) serves both as a **stdio [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server** (18 built-in tools + plugin SPI) and as a **flat CLI**, giving agents an incremental Tree-sitter code & documentation graph, a machine-enforced architectural linter, and a deterministic gate state machine.
 

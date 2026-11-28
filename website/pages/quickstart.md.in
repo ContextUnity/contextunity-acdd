@@ -3,7 +3,7 @@
 **ContextUnity ACDD** is a single local Rust binary (zero background daemons, zero cloud dependencies) that upgrades any AI coding agent (Claude Code, Codex, Antigravity, Cursor) or CI script with three capabilities:
 
 - **Code & Docs Graph (`.acdd/code-map.sqlite`)**: Tree-sitter AST symbol reads, caller/callee blast radius, test discovery, and BM25 documentation search.
-- **Architectural Linter (`acdd lint`)**: Machine-enforced crate/folder boundaries (`acdd.yaml`), executable Markdown `INV-*` rules, duplicate-code detection, and dead-code checks.
+- **Architectural Linter (`acdd lint`)**: Machine-enforced crate/folder boundaries (`.acdd/lint/*.yaml`), executable Markdown `INV-*` rules, file-monolith ratchets, asymmetric diff-clone detection, and dead-code checks.
 - **Gate State Machine (`.acdd/state.sqlite`)**: Step-by-step verified workflows (`build` → `independent review` → `deliver` → `handoff`) across isolated Git worktrees.
 
 You can adopt ACDD incrementally — start with AST navigation, companion skills, and linting on day one, then adopt verified gates whenever you want stricter engineering guarantees.
@@ -58,7 +58,7 @@ acdd init
 
 - **`acdd.yaml`**: workspace config declaring `preset: full`, indexed `roots:`, `ignore:` exclusions, `workflows_dirs: [.acdd/workflows]`, and named `specs:` configurations (`milestones` and `plans` by default, backed by `crates/acdd-spec`).
 - **`.acdd/workflows/default.yaml`**: workspace gate workflow inheriting the built-in `code` lifecycle (where you bind your project's test command).
-- **`.gitignore` guard**: ignores `.acdd/code-map.sqlite` and `.acdd/state.sqlite` while keeping `.acdd/workflows/` and `.acdd/specs/` tracked in Git.
+- **`.gitignore` guard**: ignores `.acdd/code-map.sqlite` and `.acdd/state.sqlite` while keeping `.acdd/workflows/`, `.acdd/specs/`, and `.acdd/lint/` tracked in Git.
 
 Starter `acdd.yaml` created by `acdd init`:
 
@@ -85,7 +85,7 @@ workflows_dirs:
 state_db: .acdd/state.sqlite
 ```
 
-- **`preset`**: selects active subsystems (`full`, `index`, `spec`, `state`, `minimal`); `spec` enables `validate`/`roadmap`/`draft` and the 4 docs/core MCP tools with zero `.acdd/state.sqlite` creation.
+- **`preset`**: selects active subsystems (`full`, `index`, `spec`, `state`, `minimal`); `preset: spec` enables `validate`/`roadmap`/`draft` and the 4 docs/core MCP tools with zero `.acdd/state.sqlite` creation.
 - **`roots`**: folders ACDD indexes for AST symbols, call edges, and Markdown docs.
 - **`specs`**: user-defined specification configurations (used later by `acdd draft` — you can rename `milestones`/`plans` or add entries like `features` or `rfcs`).
 
@@ -105,11 +105,11 @@ Try querying symbols and checking architectural health from your terminal:
 # 1. High-level summary of languages, entrypoints, and docs
 acdd query overview
 
-# 2. Search symbols by prefix, name, or parameter/return type
-acdd query search "parse*" --kind function
+# 2. Search symbols by prefix, path, name, or parameter/return type
+acdd query search "parse*" --path src/ --kind function
 
-# 3. Read an exact symbol body in one shot (verified by SHA-256 digest)
-acdd read src/main.rs --selector main
+# 3. Read an exact symbol body in one shot (verified by SHA-256 digest; path optional)
+acdd read --selector main
 
 # 4. Compute blast radius of staged Git changes
 acdd query impact --changes staged --depth 1

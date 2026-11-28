@@ -12,7 +12,7 @@
    - **Template masking**: HTML, Vue, and Jinja/Django files pass through `TemplateMasker` so directive spans (`{% ... %}`, `{{ ... }}`) are masked byte-for-byte without shifting line numbers.
 3. **Cross-file linking & framework packs**:
    - **Language linkers**: resolve relative imports, type-aliased Python/TS paths, and method receivers.
-   - **Framework packs**: evaluate declarative `FrameworkManifest` rules for Django, HTMX, Alpine, Nuxt/Vue/Pinia, and GridViewSpec.
+   - **Framework packs**: evaluate declarative `FrameworkManifest` rules for Django, HTMX, Alpine, Nuxt/Vue/Pinia, GridViewSpec, and Rust (`rmcp`, `axum`, `actix`, `clap`).
 4. **Documentation BM25 & code linking**:
    - **`DocSection` chunks**: splits Markdown/MDX under `docs:` at `##` / `###` headings for FTS5 BM25 search (`search_docs`, `get_doc`).
    - **Traceable edges**: resolves exact code claims and `INV-*` invariants into `governs` edges surfaced by `code_map_inspect` and `code_map_explain`.
@@ -26,6 +26,6 @@
 
 ## Pages in this section
 
-- **[acdd.yaml Configuration & Limits](/docs/index/acdd-yaml/)** — Full schema for `preset`, `roots`, `docs`, `specs`, `workflows_dirs`, `linked_workspaces`, `sensitive`, `modules`, `response`, plus operational limits & freshness guarantees.
+- **[acdd.yaml Configuration & Limits](/docs/index/acdd-yaml/)** — Full schema for `preset`, `roots`, `docs`, `specs`, `workflows_dirs`, `specs_dirs` / `lint_dirs`, `linked_workspaces`, `sensitive`, `modules`, `response`, plus operational limits & freshness guarantees.
 - **[Languages & Coverage](/docs/index/languages/)** — Compiled default & Tier-2 language profiles, static extraction scope, and receiver resolution.
 - **[Framework Manifests & Workspace Packs](/docs/index/framework-manifests/)** — Bundled framework packs, overriding or disabling rules in `.acdd/frameworks/`, and verifying resolved edges.
